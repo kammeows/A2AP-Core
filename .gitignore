@@ -1,0 +1,41 @@
+/my-files
+.env
+
+node_modules/
+*/node_modules/
+
+# 2. Environment variables & Secrets (CRITICAL: Never commit API keys!)
+.env
+.env.local
+.env.*.local
+*.env
+# Keep .env.example tracked so teammates know what variables to provide
+!.env.example
+
+# 3. Local SQLite database files & test databases (Created dynamically by seed scripts)
+*.db
+*.db-journal
+*.sqlite
+server/data/*.db
+server/data/*.sqlite
+
+# 4. Production build outputs and temporary caches
+dist/
+dist-ssr/
+client/dist/
+*.local
+.vite/
+*.tsbuildinfo
+
+# 5. Logs & debug files
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# 6. Operating system & editor metadata
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
