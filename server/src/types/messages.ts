@@ -1,0 +1,20 @@
+export type MessageType =
+  | "RFQ" // request for quotation -> buyer asks the seller agent for a price quote
+  | "OFFER" // seller agent replies with pricing, discounts, delivery dates
+  | "COUNTER_OFFER" // buyer requests an adjusted quantity or price
+  | "ACCEPT" // buyer agent proposes to accept the offer
+  | "REJECT" // an outright rejection of the offer
+  | "POLICY_CHECK" // system-generated, not from an agent (the deterministic policy engine evaluates the proposed deal)
+  | "ORDER_CREATE" // system event where razorpay orders api is called to make an order
+  | "ORDER_CONFIRM"
+  | "ORDER_FAIL";
+
+export interface Envelope {
+  message_id: string; // e.g. "msg_0007"
+  thread_id: string;
+  timestamp: string; // ISO 8601
+  from: string; // "agent:buyer:restaurant_42" | "agent:seller:veggie_vendor_09" | "system:policy_engine"
+  to: string;
+  type: MessageType;
+  payload: Record<string, unknown>;
+}
