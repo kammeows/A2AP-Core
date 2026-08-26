@@ -368,26 +368,10 @@ export async function sellerRespondToRfq(rfq: RfqPayload): Promise<OfferPayload>
       if (offer) {
         return offer;
       }
-    } catch (err: any) {
-      console.warn(`[SellerAgent] Groq attempt failed: ${err.message}. Trying local engine...`);
-    }
-  }
-
-  // 3. Guaranteed Local Fallback (Exact same pricing rules, zero crash)
-  console.log(`[SellerAgent] Using deterministic local engine for RFQ (${rfq.quantity_kg}kg ${rfq.item})`);
-  const pricing = InventoryStore.computeDiscount(rfq.item, rfq.quantity_kg);
-  return {
-    item: rfq.item,
-    quantity_kg: rfq.quantity_kg,
-    quality: rfq.quality_min || "Grade A",
-    base_price_per_kg: pricing.basePricePerKg,
-    discount_pct: pricing.discountPct,
-    discount_reason: pricing.reason,
-    final_price_per_kg: pricing.finalPricePerKg,
-    total_price: pricing.totalPrice,
-    delivery_by: tomorrow,
-    offer_expires: expiresAt,
-  };
+  // Strict: NO fallback permitted
+  throw new Error(
+    `[SellerAgent Error] AI LLM agent communication failed for Seller. All LLM calls failed and NO fallback is permitted.`
+  );
 }
 
 export class SellerAgent {

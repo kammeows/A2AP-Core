@@ -302,49 +302,10 @@ export async function buyerEvaluateOffer(
       if (decision) {
         return decision;
       }
-    } catch (err: any) {
-      console.warn(`[BuyerAgent] Groq attempt failed: ${err.message}. Trying local engine...`);
-    }
-  }
-
-  // 3. Deterministic Local Evaluation Fallback
-  console.log(`[BuyerAgent] Using deterministic local logic for offer evaluation.`);
-  if (profile.quality_min && offer.quality && offer.quality < profile.quality_min) {
-    return {
-      action: "reject",
-      reason: `Offered quality (${offer.quality}) is lower than minimum required (${profile.quality_min}).`,
-    };
-  }
-
-  if (offer.final_price_per_kg > maxPrice) {
-    return {
-      action: "send_counter",
-      counter: {
-        item: offer.item,
-        quantity_kg: offer.quantity_kg,
-        buyer_max_price_per_kg: maxPrice,
-      },
-      reason: `Offered rate ₹${offer.final_price_per_kg}/kg exceeds restaurant maximum ceiling ₹${maxPrice}/kg.`,
-    };
-  }
-
-  if (offer.total_price > profile.per_transaction_cap * 1.5) {
-    const targetQty = Math.floor(profile.per_transaction_cap / offer.final_price_per_kg);
-    return {
-      action: "send_counter",
-      counter: {
-        item: offer.item,
-        quantity_kg: targetQty,
-        buyer_max_price_per_kg: maxPrice,
-      },
-      reason: `Total deal value ₹${offer.total_price} exceeds cap ₹${profile.per_transaction_cap}. Countering with reduced quantity ${targetQty}kg.`,
-    };
-  }
-
-  return {
-    action: "propose_accept",
-    rationale: `Offer for ${offer.quantity_kg}kg at ₹${offer.final_price_per_kg}/kg (total ₹${offer.total_price}) matches procurement requirements. Proposing acceptance for policy authorization.`,
-  };
+  // Strict: NO fallback permitted
+  throw new Error(
+    `[BuyerAgent Error] AI LLM agent communication failed for Buyer. All LLM calls failed and NO fallback is permitted.`
+  );
 }
 
 export class BuyerAgent {
