@@ -1,6 +1,5 @@
 import React from 'react';
 import {
-  Shield,
   Zap,
   CheckCircle,
   AlertCircle,
@@ -8,10 +7,7 @@ import {
   Battery,
   ShoppingBag,
   Store,
-  CreditCard,
   XCircle,
-  ArrowRight,
-  TrendingUp,
   PackageX,
   Lock,
 } from 'lucide-react';
@@ -50,12 +46,11 @@ export const MobileDevice: React.FC<MobileDeviceProps> = ({
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-      {/* Device Bezel */}
+      {/* Device Frame */}
       <div className="mobile-device-frame">
         {/* Notch / Dynamic Island */}
         <div className="mobile-notch">
           <div className="mobile-notch-camera" />
-          <div style={{ width: 40, height: 4, background: '#222', borderRadius: 2 }} />
         </div>
 
         {/* Mobile Screen */}
@@ -66,73 +61,77 @@ export const MobileDevice: React.FC<MobileDeviceProps> = ({
             alignItems: 'center',
             justifyContent: 'space-between',
             fontSize: '0.74rem',
-            fontWeight: 600,
-            color: '#cbd5e1',
-            marginBottom: '1rem',
+            fontWeight: 700,
+            color: '#012652',
+            marginBottom: '0.85rem',
             padding: '0 0.25rem'
           }}>
             <span>{currentTime}</span>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-              <Wifi size={13} />
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+              <Wifi size={13} color="#012652" />
               <span style={{ fontSize: '0.7rem' }}>5G</span>
-              <Battery size={15} />
+              <Battery size={15} color="#012652" />
             </div>
           </div>
 
-          {/* App Header */}
+          {/* App Header Banner in 012652 */}
           <div style={{
+            background: '#012652',
+            borderRadius: 10,
+            padding: '0.75rem 0.85rem',
+            marginBottom: '1rem',
+            color: '#ffffff',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
-            marginBottom: '1.15rem'
+            boxShadow: '0 2px 8px rgba(1, 38, 82, 0.15)'
           }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
               <div style={{
-                width: 32,
-                height: 32,
-                borderRadius: 8,
-                background: 'linear-gradient(135deg, #0284c7, #0369a1)',
+                width: 28,
+                height: 28,
+                borderRadius: 6,
+                background: '#0D94FB',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                boxShadow: '0 2px 8px rgba(2, 132, 199, 0.4)'
+                color: '#ffffff'
               }}>
-                <ShoppingBag size={16} color="#fff" />
+                <ShoppingBag size={15} />
               </div>
               <div>
-                <h3 style={{ fontSize: '0.95rem', fontWeight: 800, color: '#f8fafc', lineHeight: 1.2 }}>
+                <h3 style={{ fontSize: '0.9rem', fontWeight: 800, color: '#ffffff', margin: 0, lineHeight: 1.2 }}>
                   A2A Procurement
                 </h3>
-                <span style={{ fontSize: '0.68rem', color: '#94a3b8' }}>
-                  Restaurant #42 Manager
+                <span style={{ fontSize: '0.66rem', color: '#bae6fd' }}>
+                  Restaurant #42
                 </span>
               </div>
             </div>
 
             <span style={{
-              fontSize: '0.68rem',
-              fontWeight: 700,
-              padding: '0.2rem 0.5rem',
-              borderRadius: 6,
-              background: 'rgba(2, 132, 199, 0.15)',
-              color: '#38bdf8',
-              border: '1px solid rgba(2, 132, 199, 0.3)'
+              fontSize: '0.66rem',
+              fontWeight: 800,
+              padding: '0.15rem 0.45rem',
+              borderRadius: 4,
+              background: '#0D94FB',
+              color: '#ffffff'
             }}>
               LIVE
             </span>
           </div>
 
           {/* Mode Switcher */}
-          <div style={{ marginBottom: '1.15rem' }}>
-            <div style={{ fontSize: '0.74rem', color: '#94a3b8', marginBottom: '0.35rem', fontWeight: 600 }}>
-              Delegation Authorization Mode
-            </div>
+          <div style={{ marginBottom: '1rem' }}>
+            <h4 style={{ fontSize: '0.8rem', color: '#0D94FB', marginBottom: '0.3rem', fontWeight: 700 }}>
+              Delegation Mode
+            </h4>
             <div className="toggle-group">
               <button
                 className={`toggle-option ${delegationMode === 'partial' ? 'active partial' : ''}`}
                 onClick={() => setDelegationMode('partial')}
               >
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.35rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.3rem' }}>
                   <Lock size={12} />
                   <span>Partial Mode</span>
                 </div>
@@ -141,31 +140,31 @@ export const MobileDevice: React.FC<MobileDeviceProps> = ({
                 className={`toggle-option ${delegationMode === 'full' ? 'active' : ''}`}
                 onClick={() => setDelegationMode('full')}
               >
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.35rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.3rem' }}>
                   <Zap size={12} />
-                  <span>Fully Autonomous</span>
+                  <span>Autonomous</span>
                 </div>
               </button>
             </div>
 
-            {/* Mode Explainer Pill */}
+            {/* Mode Explainer Box */}
             <div style={{
-              marginTop: '0.5rem',
-              padding: '0.45rem 0.65rem',
-              borderRadius: 8,
-              background: delegationMode === 'partial' ? 'rgba(217, 119, 6, 0.1)' : 'rgba(2, 132, 199, 0.1)',
-              border: `1px solid ${delegationMode === 'partial' ? 'rgba(217, 119, 6, 0.3)' : 'rgba(2, 132, 199, 0.3)'}`,
+              marginTop: '0.45rem',
+              padding: '0.4rem 0.6rem',
+              borderRadius: 6,
+              background: delegationMode === 'partial' ? '#fffbeb' : '#eff6ff',
+              border: `1px solid ${delegationMode === 'partial' ? '#fde68a' : '#bfdbfe'}`,
               fontSize: '0.72rem',
-              color: delegationMode === 'partial' ? '#fcd34d' : '#7dd3fc',
+              color: delegationMode === 'partial' ? '#92400e' : '#1e40af',
               lineHeight: 1.35
             }}>
               {delegationMode === 'partial' ? (
                 <span>
-                  🔒 <strong>Partial Mode:</strong> Asks human confirmation for each transaction before executing payment.
+                  <strong>Partial Mode:</strong> Asks your confirmation for each single transaction before executing payment.
                 </span>
               ) : (
                 <span>
-                  ⚡ <strong>Fully Autonomous:</strong> Policy engine auto-authorizes and executes payments instantly.
+                  <strong>Fully Autonomous:</strong> Authorizes and executes payment automatically upon policy approval.
                 </span>
               )}
             </div>
@@ -173,90 +172,87 @@ export const MobileDevice: React.FC<MobileDeviceProps> = ({
 
           {/* Wallet / Spend Caps Card */}
           <div style={{
-            background: 'linear-gradient(145deg, #131b2c 0%, #0d1424 100%)',
-            border: '1px solid #233048',
-            borderRadius: 14,
-            padding: '0.9rem',
-            marginBottom: '1rem',
-            boxShadow: '0 4px 14px rgba(0, 0, 0, 0.3)'
+            background: '#f8fafc',
+            border: '1px solid #e2e8f0',
+            borderRadius: 8,
+            padding: '0.8rem',
+            marginBottom: '0.85rem'
           }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.45rem' }}>
-              <span style={{ fontSize: '0.72rem', color: '#94a3b8', fontWeight: 600 }}>Weekly Spend Budget</span>
-              <span style={{ fontSize: '0.85rem', fontWeight: 800, color: '#38bdf8' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.35rem' }}>
+              <span style={{ fontSize: '0.72rem', color: '#475569', fontWeight: 600 }}>Weekly Budget</span>
+              <span style={{ fontSize: '0.85rem', fontWeight: 800, color: '#012652' }}>
                 ₹{weekSpentSoFar} <span style={{ fontSize: '0.7rem', color: '#64748b', fontWeight: 400 }}>/ ₹{weeklyBudgetCap}</span>
               </span>
             </div>
 
-            {/* Budget Progress Bar */}
-            <div style={{ width: '100%', height: 6, background: '#1e293b', borderRadius: 4, overflow: 'hidden', marginBottom: '0.65rem' }}>
+            {/* Progress Bar */}
+            <div style={{ width: '100%', height: 5, background: '#e2e8f0', borderRadius: 4, overflow: 'hidden', marginBottom: '0.5rem' }}>
               <div style={{
                 width: `${budgetPct}%`,
                 height: '100%',
-                background: budgetPct > 80 ? '#ef4444' : '#0284c7',
+                background: budgetPct > 80 ? '#dc2626' : '#0D94FB',
                 borderRadius: 4,
                 transition: 'width 0.3s ease'
               }} />
             </div>
 
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', color: '#94a3b8' }}>
-              <span>Remaining: <strong style={{ color: '#34d399' }}>₹{remainingBudget}</strong></span>
-              <span>Txn Cap: <strong style={{ color: '#f1f5f9' }}>₹{perTransactionCap}</strong></span>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', color: '#475569' }}>
+              <span>Remaining: <strong style={{ color: '#059669' }}>₹{remainingBudget}</strong></span>
+              <span>Txn Cap: <strong style={{ color: '#012652' }}>₹{perTransactionCap}</strong></span>
             </div>
           </div>
 
           {/* INTERACTIVE ACTION: Pending Confirmation in Partial Mode */}
           {pendingOffer && delegationMode === 'partial' && (
             <div className="fade-in" style={{
-              background: 'linear-gradient(145deg, #1c1505 0%, #291c06 100%)',
+              background: '#fffbeb',
               border: '1.5px solid #d97706',
-              borderRadius: 14,
-              padding: '1rem',
-              marginBottom: '1rem',
-              boxShadow: '0 6px 20px rgba(217, 119, 6, 0.25)',
-              position: 'relative'
+              borderRadius: 8,
+              padding: '0.85rem',
+              marginBottom: '0.85rem'
             }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', marginBottom: '0.5rem' }}>
-                <AlertCircle size={16} color="#fbbf24" />
-                <span style={{ fontSize: '0.8rem', fontWeight: 800, color: '#fbbf24', textTransform: 'uppercase' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.35rem' }}>
+                <AlertCircle size={15} color="#b45309" />
+                <span style={{ fontSize: '0.78rem', fontWeight: 800, color: '#92400e', textTransform: 'uppercase' }}>
                   Confirmation Required
                 </span>
               </div>
 
-              <div style={{ fontSize: '0.82rem', color: '#fef3c7', marginBottom: '0.65rem', lineHeight: 1.4 }}>
-                Buyer agent negotiated <strong>{pendingOffer.quantity_kg}kg {pendingOffer.item}</strong> for{' '}
-                <span style={{ fontSize: '1.05rem', fontWeight: 800, color: '#34d399' }}>₹{pendingOffer.total_price}</span>.
+              <div style={{ fontSize: '0.82rem', color: '#0f172a', marginBottom: '0.5rem', lineHeight: 1.35 }}>
+                Buyer negotiated <strong>{pendingOffer.quantity_kg}kg {pendingOffer.item}</strong> for{' '}
+                <span style={{ fontSize: '1rem', fontWeight: 800, color: '#059669' }}>₹{pendingOffer.total_price}</span>.
               </div>
 
               <div style={{
-                background: 'rgba(0, 0, 0, 0.4)',
-                padding: '0.5rem 0.65rem',
-                borderRadius: 8,
+                background: '#ffffff',
+                padding: '0.4rem 0.55rem',
+                borderRadius: 6,
+                border: '1px solid #fde68a',
                 fontSize: '0.72rem',
-                color: '#d4d4d8',
-                marginBottom: '0.75rem',
+                color: '#334155',
+                marginBottom: '0.65rem',
                 display: 'flex',
                 justifyContent: 'space-between'
               }}>
                 <span>Rate: ₹{pendingOffer.final_price_per_kg}/kg</span>
-                <span style={{ color: '#c084fc' }}>-{pendingOffer.discount_pct}% volume tier</span>
-                <span style={{ color: '#34d399' }}>Policy: Passed ✓</span>
+                <span style={{ color: '#7c3aed', fontWeight: 600 }}>-{pendingOffer.discount_pct}%</span>
+                <span style={{ color: '#15803d', fontWeight: 700 }}>Policy Passed ✓</span>
               </div>
 
-              <div style={{ display: 'flex', gap: '0.5rem' }}>
+              <div style={{ display: 'flex', gap: '0.45rem' }}>
                 <button
                   onClick={() => onConfirmTransaction('approve')}
                   disabled={isConfirming}
                   style={{
                     flex: 1,
-                    padding: '0.6rem 0.5rem',
-                    borderRadius: 8,
-                    background: '#10b981',
+                    padding: '0.55rem 0.5rem',
+                    borderRadius: 6,
+                    background: '#012652',
                     border: 'none',
-                    color: '#fff',
+                    color: '#ffffff',
                     fontSize: '0.8rem',
                     fontWeight: 700,
-                    cursor: isConfirming ? 'not-allowed' : 'pointer',
-                    boxShadow: '0 3px 10px rgba(16, 185, 129, 0.4)'
+                    cursor: isConfirming ? 'not-allowed' : 'pointer'
                   }}
                 >
                   {isConfirming ? 'Authorizing...' : `Confirm & Pay ₹${pendingOffer.total_price}`}
@@ -265,13 +261,13 @@ export const MobileDevice: React.FC<MobileDeviceProps> = ({
                   onClick={() => onConfirmTransaction('decline')}
                   disabled={isConfirming}
                   style={{
-                    padding: '0.6rem 0.75rem',
-                    borderRadius: 8,
-                    background: '#27272a',
-                    border: '1px solid #3f3f46',
-                    color: '#f87171',
+                    padding: '0.55rem 0.65rem',
+                    borderRadius: 6,
+                    background: '#ffffff',
+                    border: '1px solid #cbd5e1',
+                    color: '#dc2626',
                     fontSize: '0.8rem',
-                    fontWeight: 600,
+                    fontWeight: 700,
                     cursor: isConfirming ? 'not-allowed' : 'pointer'
                   }}
                 >
@@ -283,25 +279,25 @@ export const MobileDevice: React.FC<MobileDeviceProps> = ({
 
           {/* STATUS NOTIFICATIONS FEED */}
           <div style={{ flex: 1, overflowY: 'auto' }}>
-            <div style={{ fontSize: '0.74rem', color: '#94a3b8', marginBottom: '0.45rem', fontWeight: 600 }}>
-              Recent Agent Activity
-            </div>
+            <h4 style={{ fontSize: '0.78rem', color: '#0D94FB', marginBottom: '0.4rem', fontWeight: 700 }}>
+              Transaction Status
+            </h4>
 
             {/* Case 1: Out of Stock / No Seller Found */}
             {latestResult?.status === 'NO_SELLER_FOUND' && (
               <div className="fade-in" style={{
-                background: 'rgba(239, 68, 68, 0.12)',
-                border: '1px solid rgba(239, 68, 68, 0.35)',
-                borderRadius: 12,
-                padding: '0.85rem',
-                marginBottom: '0.75rem'
+                background: '#fef2f2',
+                border: '1px solid #fecaca',
+                borderRadius: 8,
+                padding: '0.75rem',
+                marginBottom: '0.65rem'
               }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', color: '#f87171', marginBottom: '0.25rem' }}>
-                  <PackageX size={16} />
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', color: '#b91c1c', marginBottom: '0.2rem' }}>
+                  <PackageX size={15} />
                   <strong style={{ fontSize: '0.82rem' }}>No seller found</strong>
                 </div>
-                <p style={{ fontSize: '0.74rem', color: '#cbd5e1' }}>
-                  Vendor has 0kg available stock. AI procurement terminated safely with zero financial exposure.
+                <p style={{ fontSize: '0.74rem', color: '#475569' }}>
+                  Seller has 0kg stock. AI procurement stopped with zero money spent.
                 </p>
               </div>
             )}
@@ -309,27 +305,27 @@ export const MobileDevice: React.FC<MobileDeviceProps> = ({
             {/* Case 2: Payment Succeeded */}
             {(latestResult?.status === 'CONFIRMED' || latestResult?.status === 'RENEGOTIATED_AND_CONFIRMED') && (
               <div className="fade-in" style={{
-                background: 'rgba(16, 185, 129, 0.12)',
-                border: '1px solid rgba(16, 185, 129, 0.35)',
-                borderRadius: 12,
-                padding: '0.85rem',
-                marginBottom: '0.75rem'
+                background: '#f0fdf4',
+                border: '1px solid #bbf7d0',
+                borderRadius: 8,
+                padding: '0.75rem',
+                marginBottom: '0.65rem'
               }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.25rem' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', color: '#34d399' }}>
-                    <CheckCircle size={16} />
-                    <strong style={{ fontSize: '0.82rem' }}>Payment Succeeded!</strong>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.2rem' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', color: '#15803d' }}>
+                    <CheckCircle size={15} />
+                    <strong style={{ fontSize: '0.82rem' }}>Payment Successful</strong>
                   </div>
-                  <span style={{ fontSize: '0.85rem', fontWeight: 800, color: '#34d399' }}>
+                  <span style={{ fontSize: '0.85rem', fontWeight: 800, color: '#15803d' }}>
                     ₹{latestResult.total_amount}
                   </span>
                 </div>
-                <p style={{ fontSize: '0.72rem', color: '#cbd5e1', fontFamily: 'var(--font-mono)' }}>
-                  Razorpay Order: {latestResult.order_id}
+                <p style={{ fontSize: '0.72rem', color: '#334155', fontFamily: 'var(--font-mono)' }}>
+                  Order: {latestResult.order_id}
                 </p>
-                <div style={{ fontSize: '0.68rem', color: '#94a3b8', marginTop: 3 }}>
+                <div style={{ fontSize: '0.68rem', color: '#059669', marginTop: 2, fontWeight: 600 }}>
                   {latestResult.status === 'RENEGOTIATED_AND_CONFIRMED'
-                    ? '✓ Bounded renegotiation succeeded & confirmed'
+                    ? '✓ Renegotiated to fit cap & confirmed'
                     : '✓ Policy approved & test-mode order created'}
                 </div>
               </div>
@@ -338,18 +334,18 @@ export const MobileDevice: React.FC<MobileDeviceProps> = ({
             {/* Case 3: Payment Failed */}
             {latestResult?.status === 'PAYMENT_FAILED' && (
               <div className="fade-in" style={{
-                background: 'rgba(239, 68, 68, 0.12)',
-                border: '1px solid rgba(239, 68, 68, 0.35)',
-                borderRadius: 12,
-                padding: '0.85rem',
-                marginBottom: '0.75rem'
+                background: '#fef2f2',
+                border: '1px solid #fecaca',
+                borderRadius: 8,
+                padding: '0.75rem',
+                marginBottom: '0.65rem'
               }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', color: '#f87171', marginBottom: '0.25rem' }}>
-                  <XCircle size={16} />
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', color: '#b91c1c', marginBottom: '0.2rem' }}>
+                  <XCircle size={15} />
                   <strong style={{ fontSize: '0.82rem' }}>Payment Failed</strong>
                 </div>
-                <p style={{ fontSize: '0.74rem', color: '#cbd5e1' }}>
-                  Razorpay gateway simulated payment authorization error.
+                <p style={{ fontSize: '0.74rem', color: '#475569' }}>
+                  Razorpay payment processing error.
                 </p>
               </div>
             )}
@@ -357,37 +353,37 @@ export const MobileDevice: React.FC<MobileDeviceProps> = ({
             {/* Case 4: No Purchase Needed */}
             {latestResult?.status === 'NO_PURCHASE_NEEDED' && (
               <div className="fade-in" style={{
-                background: 'rgba(2, 132, 199, 0.12)',
-                border: '1px solid rgba(2, 132, 199, 0.35)',
-                borderRadius: 12,
-                padding: '0.85rem',
-                marginBottom: '0.75rem'
+                background: '#eff6ff',
+                border: '1px solid #bfdbfe',
+                borderRadius: 8,
+                padding: '0.75rem',
+                marginBottom: '0.65rem'
               }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', color: '#38bdf8', marginBottom: '0.25rem' }}>
-                  <CheckCircle size={16} />
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', color: '#0369a1', marginBottom: '0.2rem' }}>
+                  <CheckCircle size={15} />
                   <strong style={{ fontSize: '0.82rem' }}>Inventory Healthy</strong>
                 </div>
-                <p style={{ fontSize: '0.74rem', color: '#cbd5e1' }}>
-                  Current stock meets target threshold. Buyer agent skipped RFQ initiation.
+                <p style={{ fontSize: '0.74rem', color: '#475569' }}>
+                  Current stock meets target threshold. No purchase required.
                 </p>
               </div>
             )}
 
-            {/* Case 5: Policy Violation Escalated */}
+            {/* Case 5: Policy Violation */}
             {latestResult?.status === 'ESCALATED_POLICY_VIOLATION' && (
               <div className="fade-in" style={{
-                background: 'rgba(245, 158, 11, 0.12)',
-                border: '1px solid rgba(245, 158, 11, 0.35)',
-                borderRadius: 12,
-                padding: '0.85rem',
-                marginBottom: '0.75rem'
+                background: '#fffbeb',
+                border: '1px solid #fde68a',
+                borderRadius: 8,
+                padding: '0.75rem',
+                marginBottom: '0.65rem'
               }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', color: '#fbbf24', marginBottom: '0.25rem' }}>
-                  <AlertCircle size={16} />
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', color: '#b45309', marginBottom: '0.2rem' }}>
+                  <AlertCircle size={15} />
                   <strong style={{ fontSize: '0.82rem' }}>Blocked by Policy Cap</strong>
                 </div>
-                <p style={{ fontSize: '0.74rem', color: '#cbd5e1' }}>
-                  Proposed deal breached spending limit. Order blocked & escalated without moving money.
+                <p style={{ fontSize: '0.74rem', color: '#475569' }}>
+                  Deal exceeded transaction cap. Escalated without financial exposure.
                 </p>
               </div>
             )}
@@ -395,43 +391,43 @@ export const MobileDevice: React.FC<MobileDeviceProps> = ({
             {/* Default Placeholder */}
             {!latestResult && (
               <div style={{
-                padding: '1.5rem 1rem',
+                padding: '1.25rem 0.75rem',
                 textAlign: 'center',
-                background: 'rgba(255, 255, 255, 0.02)',
-                borderRadius: 12,
-                border: '1px dashed #1e293b',
+                background: '#f8fafc',
+                borderRadius: 8,
+                border: '1px dashed #cbd5e1',
                 color: '#64748b',
-                fontSize: '0.78rem'
+                fontSize: '0.76rem'
               }}>
-                <Store size={24} style={{ margin: '0 auto 0.5rem', opacity: 0.4 }} />
+                <Store size={22} style={{ margin: '0 auto 0.35rem', opacity: 0.4, color: '#012652' }} />
                 <span>Ready for agent procurement cycle</span>
               </div>
             )}
           </div>
 
-          {/* Failure Simulation Switcher in Mobile Footer */}
+          {/* Footer toggle for simulated error */}
           <div style={{
             marginTop: 'auto',
-            paddingTop: '0.75rem',
-            borderTop: '1px solid #1a2334',
+            paddingTop: '0.65rem',
+            borderTop: '1px solid #f1f5f9',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
             fontSize: '0.7rem',
             color: '#64748b'
           }}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: 'pointer' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', cursor: 'pointer' }}>
               <input
                 type="checkbox"
                 checked={simulatePaymentFail}
                 onChange={(e) => setSimulatePaymentFail(e.target.checked)}
                 style={{ cursor: 'pointer' }}
               />
-              <span style={{ color: simulatePaymentFail ? '#f87171' : '#94a3b8' }}>
-                Simulate Payment Failure
+              <span style={{ color: simulatePaymentFail ? '#dc2626' : '#64748b', fontWeight: 600 }}>
+                Simulate Payment Error
               </span>
             </label>
-            <span style={{ color: '#475569' }}>v1.0 (Test Mode)</span>
+            <span style={{ color: '#012652', fontWeight: 700 }}>Razorpay Test</span>
           </div>
         </div>
       </div>
