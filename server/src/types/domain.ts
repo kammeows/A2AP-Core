@@ -66,6 +66,13 @@ export interface SplitAcceptPayload {
   rationale: string;
 }
 
+export interface PurchasedItem {
+  seller_id: string;
+  item: string;
+  quantity: number;
+  price: number;
+}
+
 export interface InventoryItem {
   item: string;
   stock_kg: number;

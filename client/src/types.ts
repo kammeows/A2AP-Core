@@ -116,6 +116,13 @@ export interface RfqPayload {
   buyer_max_price_per_kg?: number;
 }
 
+export interface PurchasedItem {
+  seller_id: string;
+  item: string;
+  quantity: number;
+  price: number;
+}
+
 export interface NegotiationResult {
   success: boolean;
   thread_id: string;
@@ -137,4 +144,5 @@ export interface NegotiationResult {
   message?: string;
   buyer_stock?: number;
   seller_stock?: number;
+  purchased_items?: PurchasedItem[];
 }

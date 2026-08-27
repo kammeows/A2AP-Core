@@ -178,6 +178,54 @@ export function saveBuyerInventory(data: typeof defaultBuyerInventory): void {
 }
 
 /**
+ * Updates stock levels upon successful order confirmation:
+ * Increases Buyer's stock, decreases Seller's stock.
+ */
+export function updateStockAfterOrder(
+  purchasedItems: Array<{ seller_id: string; item: string; quantity: number }>
+): {
+  buyerInventory: typeof defaultBuyerInventory;
+  updatedAgentCards: AgentCard[];
+} {
+  const buyerInv = getBuyerInventory();
+  const allCards = getAgentCards();
+
+  for (const p of purchasedItems) {
+    const normItem = p.item.toLowerCase().trim();
+    // 1. Increase Buyer Stock
+    const buyerKey = (Object.keys(buyerInv.inventory).find(
+      (k) => k.toLowerCase() === normItem || k.toLowerCase().replace(/s$/, "") === normItem.replace(/s$/, "")
+    ) || "flour") as keyof typeof buyerInv.inventory;
+
+    if (buyerKey && buyerInv.inventory[buyerKey] !== undefined) {
+      buyerInv.inventory[buyerKey] += p.quantity;
+    }
+
+    // 2. Decrease Seller Stock
+    const seller = allCards.find(
+      (c) => c.agent_id.toLowerCase().replace(/[^a-z0-9_:]/g, "") === p.seller_id.toLowerCase().replace(/[^a-z0-9_:]/g, "")
+    );
+    if (seller) {
+      const catKey = Object.keys(seller.catalog).find(
+        (k) => k.toLowerCase() === normItem || k.toLowerCase().replace(/s$/, "") === normItem.replace(/s$/, "")
+      );
+      if (catKey && seller.catalog[catKey]) {
+        seller.catalog[catKey].stock = Math.max(0, seller.catalog[catKey].stock - p.quantity);
+        const stmt = db.prepare(`
+          INSERT INTO agent_cards (agent_id, data)
+          VALUES (?, ?)
+          ON CONFLICT(agent_id) DO UPDATE SET data = excluded.data
+        `);
+        stmt.run(seller.agent_id, JSON.stringify(seller));
+      }
+    }
+  }
+
+  saveBuyerInventory(buyerInv);
+  return { buyerInventory: buyerInv, updatedAgentCards: allCards };
+}
+
+/**
  * Computes dynamic wholesale pricing & volume discounts for a specific seller and item.
  */
 export function computeSellerDiscount(
@@ -313,6 +361,7 @@ export class InventoryStore {
   static getSellerCard = getSellerCard;
   static getBuyerInventory = getBuyerInventory;
   static saveBuyerInventory = saveBuyerInventory;
+  static updateStockAfterOrder = updateStockAfterOrder;
   static computeSellerDiscount = computeSellerDiscount;
   static getItem = getItem;
   static computeDiscount = computeDiscount;

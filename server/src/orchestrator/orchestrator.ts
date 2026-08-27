@@ -11,6 +11,7 @@ import {
   SplitAcceptPayload,
   BuyerDecision,
   AgentCard,
+  PurchasedItem,
 } from "../types/domain.js";
 import { PolicyConfig, PolicyResult } from "../types/policy.js";
 import { InventoryStore } from "../inventory/inventoryStore.js";
@@ -63,6 +64,7 @@ export interface NegotiationResult {
   message?: string;
   buyer_stock?: number;
   seller_stock?: number;
+  purchased_items?: PurchasedItem[];
 }
 
 let msgCounter = 0;
@@ -385,6 +387,37 @@ export async function runNegotiation(
       message: `Razorpay test-mode order ${order.id} confirmed for ₹${totalDealAmount}.`,
     });
 
+    // Compute purchased items to update inventory in database & UI
+    const purchasedItems: PurchasedItem[] = [];
+    if (buyerDecision.action === "propose_split_accept" && buyerDecision.split_payload) {
+      for (const sp of buyerDecision.split_payload.splits) {
+        purchasedItems.push({
+          seller_id: sp.seller_id,
+          item: sp.item,
+          quantity: sp.quantity_kg,
+          price: sp.unit_price,
+        });
+      }
+    } else {
+      purchasedItems.push({
+        seller_id: winningSellerId,
+        item: chosenOffer.item,
+        quantity: chosenOffer.quantity_kg,
+        price: chosenOffer.final_price_per_kg,
+      });
+    }
+    if (buyerDecision.accepted_upsell) {
+      purchasedItems.push({
+        seller_id: winningSellerId,
+        item: buyerDecision.accepted_upsell.item,
+        quantity: buyerDecision.accepted_upsell.quantity_kg,
+        price: buyerDecision.accepted_upsell.unit_price,
+      });
+    }
+
+    // Deduct stock from seller(s) and increase stock for buyer in DB
+    InventoryStore.updateStockAfterOrder(purchasedItems);
+
     return {
       thread_id: threadId,
       scenario,
@@ -394,6 +427,7 @@ export async function runNegotiation(
       total_amount: totalDealAmount,
       policy_checks: policyResult.checks,
       buyer_stock: (params.buyerStockKg || 5) + deficitQuantity,
+      purchased_items: purchasedItems,
     };
   } else {
     const failedRules = policyResult.checks.filter((c) => !c.passed).map((c) => c.rule);
@@ -462,6 +496,16 @@ export async function runNegotiation(
           message: `Negotiation succeeded: Razorpay order ${order.id} confirmed for ₹${counterOffer.total_price} after bounded renegotiation.`,
         });
 
+        const renegPurchased: PurchasedItem[] = [
+          {
+            seller_id: winningSellerId,
+            item: counterOffer.item,
+            quantity: counterOffer.quantity_kg,
+            price: counterOffer.final_price_per_kg,
+          },
+        ];
+        InventoryStore.updateStockAfterOrder(renegPurchased);
+
         return {
           thread_id: threadId,
           scenario,
@@ -471,6 +515,7 @@ export async function runNegotiation(
           total_amount: counterOffer.total_price,
           policy_checks: rePolicyResult.checks,
           buyer_stock: (params.buyerStockKg || 5) + reducedQty,
+          purchased_items: renegPurchased,
         };
       }
     }
@@ -507,6 +552,7 @@ export async function confirmPendingTransaction(params: {
   total_amount?: number;
   buyer_stock?: number;
   seller_stock?: number;
+  purchased_items?: PurchasedItem[];
 }> {
   const { threadId, offer, action = "approve", simulatePaymentFail = false } = params;
 
@@ -548,12 +594,23 @@ export async function confirmPendingTransaction(params: {
     message: `Human-authorized Razorpay order ${order.id} confirmed for ₹${totalPrice}.`,
   });
 
+  const purchasedItems: PurchasedItem[] = [
+    {
+      seller_id: offer.seller_id || "agent:seller:razor_pies",
+      item: offer.item || "flour",
+      quantity: offer.quantity_kg || 5,
+      price: offer.final_price_per_kg || 6,
+    },
+  ];
+  InventoryStore.updateStockAfterOrder(purchasedItems);
+
   return {
     success: true,
     status: "CONFIRMED",
     order_id: order.id,
     total_amount: totalPrice,
-    buyer_stock: (offer.quantity_kg || 50) + 15,
+    buyer_stock: (offer.quantity_kg || 5) + 15,
+    purchased_items: purchasedItems,
   };
 }
 

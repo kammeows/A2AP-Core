@@ -149,11 +149,12 @@ export const App: React.FC = () => {
   const handleConfirmTransaction = async (action: 'approve' | 'decline') => {
     if (!activeThreadId || !pendingOffer) return;
     setIsConfirming(true);
+    const offerBeingConfirmed = pendingOffer;
 
     try {
       const res = await confirmTransaction({
         threadId: activeThreadId,
-        offer: pendingOffer,
+        offer: offerBeingConfirmed,
         action,
         simulatePaymentFail,
       });
@@ -162,36 +163,49 @@ export const App: React.FC = () => {
       setPendingOffer(null);
 
       if (res.status === 'CONFIRMED') {
-        setLatestResult((prev) => ({
+        const confirmedPurchased = res.purchased_items && res.purchased_items.length > 0
+          ? res.purchased_items
+          : [
+              {
+                seller_id: offerBeingConfirmed.seller_id || "agent:seller:razor_pies",
+                item: offerBeingConfirmed.item,
+                quantity: offerBeingConfirmed.quantity_kg,
+                price: offerBeingConfirmed.final_price_per_kg,
+              },
+            ];
+
+        setLatestResult({
           success: true,
           thread_id: activeThreadId,
-          scenario: prev?.scenario || 'custom',
+          scenario: 'custom',
           status: 'CONFIRMED',
           final_message_type: 'ORDER_CONFIRM',
           order_id: res.order_id,
-          total_amount: res.total_amount,
-        }));
+          total_amount: res.total_amount || offerBeingConfirmed.total_price,
+          purchased_items: confirmedPurchased,
+          pending_offer: offerBeingConfirmed,
+        });
 
         if (res.buyer_stock !== undefined) setBuyerStockKg(res.buyer_stock);
         if (res.seller_stock !== undefined) setSellerStockKg(res.seller_stock);
       } else if (res.status === 'DECLINED') {
-        setLatestResult((prev) => ({
+        setLatestResult({
           success: true,
           thread_id: activeThreadId,
-          scenario: prev?.scenario || 'custom',
+          scenario: 'custom',
           status: 'REJECTED',
           final_message_type: 'ORDER_FAIL',
           message: 'Transaction declined by user',
-        }));
+        });
       } else if (res.status === 'PAYMENT_FAILED') {
-        setLatestResult((prev) => ({
+        setLatestResult({
           success: false,
           thread_id: activeThreadId,
-          scenario: prev?.scenario || 'custom',
+          scenario: 'custom',
           status: 'PAYMENT_FAILED',
           final_message_type: 'ORDER_FAIL',
           message: 'Payment gateway error',
-        }));
+        });
       }
 
       // Re-fetch thread messages to show confirmed envelopes

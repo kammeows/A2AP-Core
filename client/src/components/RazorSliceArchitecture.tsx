@@ -72,6 +72,172 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
     onions: { stock: 4, price: 5 },
   });
 
+  // Track last processed thread ID to ensure each confirmed deal updates simulation stock exactly once
+  const lastProcessedThreadRef = React.useRef<string | null>(null);
+  const [restockNotification, setRestockNotification] = useState<{
+    text: string;
+    items: Array<{ item: string; quantity: number; seller: string }>;
+  } | null>(null);
+
+  const normalizeKey = (name: string): keyof BuyerPantry => {
+    const s = (name || "").toLowerCase().trim();
+    if (s.startsWith("flour")) return "flour";
+    if (s.startsWith("cheese")) return "cheese";
+    if (s.startsWith("milk")) return "milk";
+    if (s.startsWith("tomat")) return "tomatoes";
+    if (s.startsWith("onion")) return "onions";
+    return s as keyof BuyerPantry;
+  };
+
+  React.useEffect(() => {
+    if (
+      latestResult &&
+      (latestResult.status === "CONFIRMED" || latestResult.status === "RENEGOTIATED_AND_CONFIRMED")
+    ) {
+      const eventKey = `${latestResult.thread_id || "direct"}_${latestResult.status}_${latestResult.order_id || ""}`;
+      if (lastProcessedThreadRef.current === eventKey) {
+        return;
+      }
+      lastProcessedThreadRef.current = eventKey;
+
+      const purchasedList: Array<{ seller_id: string; item: string; quantity: number }> = [];
+
+      if (latestResult.purchased_items && latestResult.purchased_items.length > 0) {
+        for (const p of latestResult.purchased_items) {
+          purchasedList.push({
+            seller_id: p.seller_id,
+            item: p.item,
+            quantity: Number(p.quantity) || 1,
+          });
+        }
+      } else if (latestResult.pending_offer) {
+        purchasedList.push({
+          seller_id: latestResult.pending_offer.seller_id || "agent:seller:razorcery_1",
+          item: latestResult.pending_offer.item,
+          quantity: Number(latestResult.pending_offer.quantity_kg) || 1,
+        });
+      }
+
+      if (purchasedList.length > 0) {
+        const itemSummaryList: Array<{ item: string; quantity: number; seller: string }> = [];
+
+        // 1. Increment Buyer Pantry Stock
+        setBuyerStock((prev) => {
+          const next = { ...prev };
+          for (const p of purchasedList) {
+            const pantryKey = normalizeKey(p.item);
+            if (pantryKey in next && typeof next[pantryKey] === "number") {
+              next[pantryKey] = (next[pantryKey] as number) + p.quantity;
+            }
+          }
+          return next;
+        });
+
+        // 2. Decrement Seller Stock
+        for (const p of purchasedList) {
+          const norm = normalizeKey(p.item);
+          const sid = (p.seller_id || "").toLowerCase();
+
+          let matchedSellerName = "Wholesale Grocery";
+          const isPies = sid.includes("pies") || sid.includes("razor_pies") || norm === "cheese";
+          const isCery1 = sid.includes("razorcery_1") || sid.includes("fresh #1") || (norm === "flour" && !sid.includes("pies")) || (norm === "onions" && !sid.includes("razorcery_2"));
+          const isCery2 = sid.includes("razorcery_2") || sid.includes("dairy & veg #2") || (norm === "tomatoes" && !sid.includes("razorcery_1"));
+
+          if (isPies && !sid.includes("razorcery_1") && !sid.includes("razorcery_2")) {
+            matchedSellerName = "RazorPies";
+            setRazorPies((prev) => {
+              const k = Object.keys(prev).find((key) => normalizeKey(key) === norm);
+              if (k && prev[k]) {
+                return {
+                  ...prev,
+                  [k]: {
+                    ...prev[k],
+                    stock: Math.max(0, prev[k].stock - p.quantity),
+                  },
+                };
+              }
+              return prev;
+            });
+          } else if (isCery1 && !sid.includes("razorcery_2")) {
+            matchedSellerName = "Razorcery-1";
+            setRazorcery1((prev) => {
+              const k = Object.keys(prev).find((key) => normalizeKey(key) === norm);
+              if (k && prev[k]) {
+                return {
+                  ...prev,
+                  [k]: {
+                    ...prev[k],
+                    stock: Math.max(0, prev[k].stock - p.quantity),
+                  },
+                };
+              }
+              return prev;
+            });
+          } else if (isCery2) {
+            matchedSellerName = "Razorcery-2";
+            setRazorcery2((prev) => {
+              const k = Object.keys(prev).find((key) => normalizeKey(key) === norm);
+              if (k && prev[k]) {
+                return {
+                  ...prev,
+                  [k]: {
+                    ...prev[k],
+                    stock: Math.max(0, prev[k].stock - p.quantity),
+                  },
+                };
+              }
+              return prev;
+            });
+          } else {
+            matchedSellerName = "Razorcery-1 & RazorPies";
+            setRazorcery1((prev) => {
+              const k = Object.keys(prev).find((key) => normalizeKey(key) === norm);
+              if (k && prev[k] && prev[k].stock > 0) {
+                return {
+                  ...prev,
+                  [k]: {
+                    ...prev[k],
+                    stock: Math.max(0, prev[k].stock - p.quantity),
+                  },
+                };
+              }
+              return prev;
+            });
+            setRazorPies((prev) => {
+              const k = Object.keys(prev).find((key) => normalizeKey(key) === norm);
+              if (k && prev[k] && prev[k].stock > 0) {
+                return {
+                  ...prev,
+                  [k]: {
+                    ...prev[k],
+                    stock: Math.max(0, prev[k].stock - p.quantity),
+                  },
+                };
+              }
+              return prev;
+            });
+          }
+
+          itemSummaryList.push({
+            item: p.item,
+            quantity: p.quantity,
+            seller: matchedSellerName,
+          });
+        }
+
+        setRestockNotification({
+          text: `Payment Confirmed! Restocked ${purchasedList.map((p) => `${p.quantity}u ${p.item}`).join(", ")}`,
+          items: itemSummaryList,
+        });
+
+        const timer = setTimeout(() => {
+          setRestockNotification(null);
+        }, 6000);
+        return () => clearTimeout(timer);
+      }
+    }
+  }, [latestResult]);
+
   // Active customer order queue formulas (from main-idea.md)
   // Order 1: Margherita (-2 Flour, -2 Cheese, -1 Tomato)
   // Order 2: Farm Fresh (-2 Flour, -1 Cheese, -1 Tomato, -2 Onions)
@@ -249,8 +415,20 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
       scenario = "failure";
     }
 
+    // Identify which item has deficit
+    const deficitEntries = Object.entries(deficits).filter(([_, qty]) => qty > 0);
+    let itemToProcure = "flour";
+    let quantityNeeded = 6;
+    if (deficitEntries.length > 0) {
+      deficitEntries.sort((a, b) => b[1] - a[1]);
+      itemToProcure = deficitEntries[0][0];
+      quantityNeeded = deficitEntries[0][1];
+    }
+
     onRunAi(scenario, {
-      buyerStockKg: buyerStock.cheese + buyerStock.flour + buyerStock.tomatoes,
+      itemToProcure,
+      quantityNeeded,
+      buyerStockKg: buyerStock[itemToProcure as keyof BuyerPantry] || buyerStock.flour,
       sellerStockKg:
         razorPies.cheese.stock + razorcery1.flour.stock + razorcery2.milk.stock,
       buyerTargetStockKg: buyerStock.targetStock,
@@ -283,6 +461,50 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
           opacity: 0.8,
         }}
       />
+
+      {/* Restock Live Notification Banner */}
+      {restockNotification && (
+        <div
+          style={{
+            position: "relative",
+            zIndex: 10,
+            background: "linear-gradient(90deg, rgba(16, 185, 129, 0.2) 0%, rgba(13, 148, 251, 0.2) 100%)",
+            border: "1px solid #10b981",
+            borderRadius: 8,
+            padding: "0.6rem 1rem",
+            marginBottom: "1rem",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            animation: "pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+            <CheckCircle2 size={18} color="#10b981" />
+            <span style={{ fontWeight: 700, color: "#ffffff", fontSize: "0.85rem" }}>
+              {restockNotification.text}
+            </span>
+          </div>
+          <div style={{ display: "flex", gap: "0.4rem" }}>
+            {restockNotification.items.map((it, idx) => (
+              <span
+                key={idx}
+                style={{
+                  background: "#064e3b",
+                  color: "#6ee7b7",
+                  fontSize: "0.72rem",
+                  fontWeight: 700,
+                  padding: "0.2rem 0.5rem",
+                  borderRadius: 4,
+                  border: "1px solid #059669",
+                }}
+              >
+                +{it.quantity} {it.item} from {it.seller}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Top Header & Presets */}
       <div
