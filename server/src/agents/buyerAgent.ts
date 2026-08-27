@@ -36,8 +36,8 @@ function getGeminiKeys(): string[] {
 }
 
 export const RAZORSLICE_MENU = {
-  margherita: { flour: 2, cheese: 2, tomato: 2 },
-  farm_fresh: { flour: 2, cheese: 2, tomato: 2, onion: 2 },
+  margherita: { flour: 5, cheese: 2, tomato: 1 },
+  farm_fresh: { flour: 5, cheese: 1, tomato: 1, onion: 2 },
   milk_shake: { milk: 2 },
 };
 

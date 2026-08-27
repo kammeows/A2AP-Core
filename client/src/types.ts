@@ -2,11 +2,13 @@ export type MessageType =
   | "RFQ"
   | "OFFER"
   | "COUNTER_OFFER"
+  | "ROUND_CAP_REACHED"
   | "ACCEPT"
   | "SPLIT_ACCEPT"
   | "UPSELL_DECLINE"
   | "UPSELL_ACCEPT"
   | "REJECT"
+  | "INVENTORY_EVENT"
   | "POLICY_CHECK"
   | "ORDER_CREATE"
   | "ORDER_CONFIRM"
@@ -114,6 +116,7 @@ export interface RfqPayload {
   quality_min?: string;
   needed_by?: string;
   buyer_max_price_per_kg?: number;
+  target_price_per_unit?: number;
 }
 
 export interface PurchasedItem {

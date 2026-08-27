@@ -176,4 +176,36 @@ describe("Multi-Seller Agent Network & Split-Order Optimization", () => {
     assert.ok(flourRfqs.length > 0);
     assert.ok(cheeseRfqs.length > 0);
   });
+
+  test("7. Seller concedes partway toward target price but strictly enforces code floor price", async () => {
+    // RazorPies cheese base is ₹4, floor price is ₹3.20
+    const offerNormal = await sellerRespondToRfq(
+      { item: "cheese", quantity_kg: 5, target_price_per_unit: 3.2 },
+      "agent:seller:razor_pies"
+    );
+    assert.ok(offerNormal.final_price_per_kg >= 3.2);
+
+    // If buyer asks for ₹1.00 (below floor), seller never breaches ₹3.20
+    const offerExtreme = await sellerRespondToRfq(
+      { item: "cheese", quantity_kg: 5, target_price_per_unit: 1.0 },
+      "agent:seller:razor_pies"
+    );
+    assert.equal(offerExtreme.final_price_per_kg, 3.2);
+  });
+
+  test("8. Orchestrator enforces max 2-round negotiation limit and logs ROUND_CAP_REACHED", async () => {
+    const threadId = "test_round_cap_" + Date.now();
+    const result = await runNegotiation({
+      threadId,
+      scenario: "custom",
+      itemToProcure: "cheese",
+      quantityNeeded: 6,
+    });
+
+    assert.equal(result.status, "CONFIRMED");
+    const thread = ThreadStore.getThread(threadId);
+    const roundCapMsg = thread.find((m) => m.type === "ROUND_CAP_REACHED");
+    assert.ok(roundCapMsg);
+    assert.equal(roundCapMsg.payload.narrative, "round_cap_reached: buyer proceeding with best available offer");
+  });
 });

@@ -27,6 +27,7 @@ export interface RfqPayload {
   quality_min?: string;
   needed_by?: string;
   buyer_max_price_per_kg?: number;
+  target_price_per_unit?: number;
   target_seller_id?: string;
   narrative?: string;
 }

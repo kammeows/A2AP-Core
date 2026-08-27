@@ -221,7 +221,12 @@ export async function sellerRespondToRfq(
     };
   }
 
-  const pricing = InventoryStore.computeSellerDiscount(sellerId, rfq.item, rfq.quantity_kg);
+  const pricing = InventoryStore.computeSellerDiscount(
+    sellerId,
+    rfq.item,
+    rfq.quantity_kg,
+    rfq.target_price_per_unit
+  );
   const sellerCard = InventoryStore.getSellerCard(sellerId);
   const sellerName = sellerCard ? sellerCard.name : sellerId;
 
@@ -236,6 +241,15 @@ export async function sellerRespondToRfq(
     };
   }
 
+  let concessionNarrative = "";
+  if (rfq.target_price_per_unit && rfq.target_price_per_unit < pricing.basePricePerUnit) {
+    if (pricing.finalPricePerUnit === pricing.floorPrice) {
+      concessionNarrative = ` (conceded to seller floor rate ₹${pricing.floorPrice}/unit against requested ₹${rfq.target_price_per_unit})`;
+    } else {
+      concessionNarrative = ` (conceded partway toward target ₹${rfq.target_price_per_unit})`;
+    }
+  }
+
   return {
     seller_id: sellerId,
     item: pricing.item,
@@ -248,7 +262,7 @@ export async function sellerRespondToRfq(
     total_price: pricing.totalPrice,
     delivery_by: tomorrow,
     offer_expires: expiresAt,
-    rationale: `${sellerName} computed rate ₹${pricing.finalPricePerUnit}/unit for ${rfq.quantity_kg} units from available stock of ${pricing.availableStockUnits} units (${pricing.discountPct > 0 ? `${pricing.discountPct}% ${pricing.reason}` : "base catalog rate"}).`,
+    rationale: `${sellerName} offered rate ₹${pricing.finalPricePerUnit}/unit for ${rfq.quantity_kg} units from stock of ${pricing.availableStockUnits} units${concessionNarrative} (${pricing.discountPct > 0 ? `${pricing.discountPct}% ${pricing.reason}` : "base catalog rate"}). Floor price ₹${pricing.floorPrice}/unit enforced.`,
     upsell_item: upsell,
   };
 }

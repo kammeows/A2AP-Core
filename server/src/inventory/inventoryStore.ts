@@ -4,6 +4,29 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { AgentCard, InventoryItem } from "../types/domain.js";
 
+// Hard Floor Prices for Seller Agents (Never breached under any negotiation concession)
+export const sellerFloorPrices: Record<string, Record<string, number>> = {
+  "agent:seller:razor_pies": {
+    cheese: 3.2,
+    flour: 6.5,
+    milk: 7.5,
+  },
+  "agent:seller:razorcery_1": {
+    flour: 5.0,
+    tomatoes: 3.0,
+    onions: 3.2,
+  },
+  "agent:seller:razorcery_2": {
+    milk: 8.0,
+    tomatoes: 2.5,
+    onions: 4.0,
+  },
+  "agent:seller:veggie_vendor_09": {
+    tomato: 24.0,
+    tomatoes: 24.0,
+  },
+};
+
 // Default Known Sellers (Agent Cards) in the A2A network
 export const defaultAgentCards: AgentCard[] = [
   {
@@ -59,17 +82,24 @@ export const defaultAgentCards: AgentCard[] = [
   },
 ];
 
-// Default Buyer Inventory for RazorSlice
+// Default Buyer Inventory for RazorSlice (Par stock: Flour: 30, others: 5)
 export const defaultBuyerInventory = {
   restaurant_id: "agent:buyer:razorslice",
   inventory: {
-    cheese: 3,
-    flour: 5,
+    cheese: 5,
+    flour: 30,
     tomatoes: 6,
     onions: 5,
     milk: 7,
   },
-  target_stock: 15,
+  par_stock: {
+    cheese: 5,
+    flour: 30,
+    tomatoes: 5,
+    onions: 5,
+    milk: 5,
+  },
+  target_stock: 30,
 };
 
 // Database Connection
@@ -116,7 +146,6 @@ export function getAgentCards(): AgentCard[] {
     if (rows && rows.length > 0) {
       return rows.map((r) => JSON.parse(r.data) as AgentCard);
     }
-    // Seed default cards if table empty
     saveDefaultAgentCards();
     return defaultAgentCards;
   } catch {
@@ -231,7 +260,8 @@ export function updateStockAfterOrder(
 export function computeSellerDiscount(
   sellerId: string,
   itemName: string,
-  quantityUnits: number
+  quantityUnits: number,
+  targetPricePerUnit?: number
 ): {
   sellerId: string;
   item: string;
@@ -241,8 +271,9 @@ export function computeSellerDiscount(
   finalPricePerUnit: number;
   totalPrice: number;
   availableStockUnits: number;
+  floorPrice: number;
 } {
-  const normalizedItem = itemName.toLowerCase().trim().replace(/s$/, ""); // e.g. "tomatoes" -> "tomato"
+  const normalizedItem = itemName.toLowerCase().trim().replace(/s$/, "");
   const seller = getSellerCard(sellerId);
 
   if (!seller) {
@@ -255,10 +286,10 @@ export function computeSellerDiscount(
       finalPricePerUnit: 10,
       totalPrice: 10 * quantityUnits,
       availableStockUnits: 0,
+      floorPrice: 7.5,
     };
   }
 
-  // Find item in catalog (exact or singular/plural)
   const catalogKey =
     Object.keys(seller.catalog).find(
       (k) => k.toLowerCase() === itemName.toLowerCase() || k.toLowerCase().replace(/s$/, "") === normalizedItem
@@ -267,6 +298,13 @@ export function computeSellerDiscount(
   const catalogEntry = seller.catalog[catalogKey] || { base_price: 5, stock: 0 };
   const basePrice = catalogEntry.base_price;
   const availableStock = catalogEntry.stock;
+
+  // Determine floor price for this seller & item
+  const sellerFloors = sellerFloorPrices[seller.agent_id] || {};
+  const floorKey = Object.keys(sellerFloors).find(
+    (k) => k.toLowerCase() === catalogKey.toLowerCase() || k.toLowerCase() === normalizedItem
+  );
+  const floorPrice = floorKey ? sellerFloors[floorKey] : Number((basePrice * 0.7).toFixed(2));
 
   let discountPct = 0;
   let reason = "standard_catalog_rate";
@@ -290,8 +328,20 @@ export function computeSellerDiscount(
     reason = "excess_stock_clearance";
   }
 
-  const finalPricePerUnit = Number((basePrice * (1 - discountPct / 100)).toFixed(2));
-  const totalPrice = Number((finalPricePerUnit * quantityUnits).toFixed(2));
+  let finalPrice = Number((basePrice * (1 - discountPct / 100)).toFixed(2));
+
+  // If buyer asked for a target price below current rate, seller moves partway toward ask, bounded by floor price
+  if (targetPricePerUnit && targetPricePerUnit < finalPrice) {
+    const concessionStep = (finalPrice - targetPricePerUnit) * 0.45;
+    const proposed = finalPrice - concessionStep;
+    finalPrice = Number(Math.max(floorPrice, proposed).toFixed(2));
+    discountPct = Number(((1 - finalPrice / basePrice) * 100).toFixed(1));
+    reason = finalPrice === floorPrice ? "concession_to_hard_floor_limit" : "volume_commitment_concession";
+  }
+
+  // Enforce floor price strictly
+  finalPrice = Math.max(floorPrice, finalPrice);
+  const totalPrice = Number((finalPrice * quantityUnits).toFixed(2));
 
   return {
     sellerId: seller.agent_id,
@@ -299,9 +349,10 @@ export function computeSellerDiscount(
     discountPct,
     reason,
     basePricePerUnit: basePrice,
-    finalPricePerUnit,
+    finalPricePerUnit: finalPrice,
     totalPrice,
     availableStockUnits: availableStock,
+    floorPrice,
   };
 }
 
@@ -365,6 +416,7 @@ export class InventoryStore {
   static computeSellerDiscount = computeSellerDiscount;
   static getItem = getItem;
   static computeDiscount = computeDiscount;
+  static sellerFloorPrices = sellerFloorPrices;
 }
 
 export default InventoryStore;

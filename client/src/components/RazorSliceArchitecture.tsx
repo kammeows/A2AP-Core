@@ -16,6 +16,8 @@ import {
   PackageCheck,
   Send,
   CreditCard,
+  Utensils,
+  Layers,
 } from "lucide-react";
 import { NegotiationResult } from "../types";
 
@@ -55,9 +57,9 @@ export interface KitchenLogEntry {
   time: string;
   orderId?: number;
   type:
+    | "inventory_event"
     | "order_taken"
-    | "kitchen_check"
-    | "deficit"
+    | "par_trigger"
     | "a2a_procure"
     | "restocked"
     | "order_served"
@@ -66,25 +68,35 @@ export interface KitchenLogEntry {
   detail: string;
 }
 
+// Par stock bare minimums (simulation-2.md requirement 1)
+export const PAR_STOCK_LEVELS: Record<keyof Omit<BuyerPantry, "targetStock">, number> = {
+  flour: 30,
+  cheese: 5,
+  tomatoes: 5,
+  onions: 5,
+  milk: 5,
+};
+
+// Customer Orders with updated 5-Flour pizza recipes (simulation-2.md requirement 1)
 const DEFAULT_ORDERS: CustomerOrder[] = [
   {
     id: 1,
     name: "Margherita Pizza",
-    recipe: { flour: 2, cheese: 2, tomatoes: 1 },
+    recipe: { flour: 5, cheese: 2, tomatoes: 1 },
     price: "₹299",
     status: "queued",
   },
   {
     id: 2,
     name: "Farm Fresh Pizza",
-    recipe: { flour: 2, cheese: 1, tomatoes: 1, onions: 2 },
+    recipe: { flour: 5, cheese: 1, tomatoes: 1, onions: 2 },
     price: "₹349",
     status: "queued",
   },
   {
     id: 3,
     name: "Margherita Pizza + Milk Shake",
-    recipe: { flour: 2, cheese: 2, tomatoes: 1, milk: 2 },
+    recipe: { flour: 5, cheese: 2, tomatoes: 1, milk: 2 },
     price: "₹399",
     status: "queued",
   },
@@ -103,58 +115,52 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
   delegationMode,
   latestResult,
 }) => {
-  // 1. RazorSlice Buyer Stock State (from main-idea.md: cheese-3, flour-5, tomatoes-6, onions-5, milk-7, target=15)
+  // 1. RazorSlice Buyer Stock State (simulation-2.md: flour par=30, others par=5)
   const [buyerStock, setBuyerStock] = useState<BuyerPantry>({
-    cheese: 3,
-    flour: 5,
+    cheese: 5,
+    flour: 30,
     tomatoes: 6,
     onions: 5,
     milk: 7,
-    targetStock: 15,
+    targetStock: 30,
   });
 
   // 2. Seller 1: RazorPies (sells cheese, milk, flour)
   const [razorPies, setRazorPies] = useState<SellerInventory>({
-    cheese: { stock: 10, price: 4 },
-    flour: { stock: 6, price: 8 },
-    milk: { stock: 4, price: 9 },
+    cheese: { stock: 15, price: 4 },
+    flour: { stock: 25, price: 8 },
+    milk: { stock: 10, price: 9 },
   });
 
   // 3. Seller 2: Razorcery-1 (sells flour, tomatoes, onions)
   const [razorcery1, setRazorcery1] = useState<SellerInventory>({
-    flour: { stock: 10, price: 6 },
-    tomatoes: { stock: 6, price: 4 },
-    onions: { stock: 4, price: 4 },
+    flour: { stock: 35, price: 6 },
+    tomatoes: { stock: 15, price: 4 },
+    onions: { stock: 15, price: 4 },
   });
 
   // 4. Seller 3: Razorcery-2 (sells tomatoes, onions, milk)
   const [razorcery2, setRazorcery2] = useState<SellerInventory>({
-    milk: { stock: 10, price: 10 },
-    tomatoes: { stock: 6, price: 3 },
-    onions: { stock: 4, price: 5 },
+    milk: { stock: 15, price: 10 },
+    tomatoes: { stock: 15, price: 3 },
+    onions: { stock: 15, price: 5 },
   });
 
   // Dynamic Customer Order Queue & Fulfillment States
   const [orderQueue, setOrderQueue] = useState<CustomerOrder[]>(DEFAULT_ORDERS);
   const [completedOrders, setCompletedOrders] = useState<CustomerOrder[]>([]);
-  const [activeProcessingOrder, setActiveProcessingOrder] =
-    useState<CustomerOrder | null>(null);
+  const [activeProcessingOrder, setActiveProcessingOrder] = useState<CustomerOrder | null>(null);
   const [isAutoSimulating, setIsAutoSimulating] = useState<boolean>(false);
   const nextOrderIdRef = useRef<number>(5);
 
-  // Kitchen Activity & Order Log
+  // Kitchen Order Agent Activity & Audit Log
   const [kitchenLogs, setKitchenLogs] = useState<KitchenLogEntry[]>([
     {
       id: "log_init",
-      time: new Date().toLocaleTimeString([], {
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-      }),
+      time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
       type: "info",
-      title: "Kitchen Simulation Ready",
-      detail:
-        "4 customer orders queued at the RazorSlice front counter. Autonomous procurement engine monitoring pantry stock.",
+      title: "Kitchen Order Agent Ready",
+      detail: "Deterministic order runner active. Par stock monitor: Flour=30, Cheese=5, Tomatoes=5, Onions=5, Milk=5.",
     },
   ]);
 
@@ -162,15 +168,11 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
     type: KitchenLogEntry["type"],
     title: string,
     detail: string,
-    orderId?: number,
+    orderId?: number
   ) => {
     const newEntry: KitchenLogEntry = {
       id: `log_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
-      time: new Date().toLocaleTimeString([], {
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-      }),
+      time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
       type,
       title,
       detail,
@@ -201,8 +203,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
   useEffect(() => {
     if (
       latestResult &&
-      (latestResult.status === "CONFIRMED" ||
-        latestResult.status === "RENEGOTIATED_AND_CONFIRMED")
+      (latestResult.status === "CONFIRMED" || latestResult.status === "RENEGOTIATED_AND_CONFIRMED")
     ) {
       const eventKey = `${latestResult.thread_id || "direct"}_${latestResult.status}_${latestResult.order_id || ""}`;
       if (lastProcessedThreadRef.current === eventKey) {
@@ -210,16 +211,9 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
       }
       lastProcessedThreadRef.current = eventKey;
 
-      const purchasedList: Array<{
-        seller_id: string;
-        item: string;
-        quantity: number;
-      }> = [];
+      const purchasedList: Array<{ seller_id: string; item: string; quantity: number }> = [];
 
-      if (
-        latestResult.purchased_items &&
-        latestResult.purchased_items.length > 0
-      ) {
+      if (latestResult.purchased_items && latestResult.purchased_items.length > 0) {
         for (const p of latestResult.purchased_items) {
           purchasedList.push({
             seller_id: p.seller_id,
@@ -229,19 +223,14 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
         }
       } else if (latestResult.pending_offer) {
         purchasedList.push({
-          seller_id:
-            latestResult.pending_offer.seller_id || "agent:seller:razorcery_1",
+          seller_id: latestResult.pending_offer.seller_id || "agent:seller:razorcery_1",
           item: latestResult.pending_offer.item,
           quantity: Number(latestResult.pending_offer.quantity_kg) || 1,
         });
       }
 
       if (purchasedList.length > 0) {
-        const itemSummaryList: Array<{
-          item: string;
-          quantity: number;
-          seller: string;
-        }> = [];
+        const itemSummaryList: Array<{ item: string; quantity: number; seller: string }> = [];
 
         // 1. Increment Buyer Pantry Stock
         setBuyerStock((prev) => {
@@ -261,37 +250,18 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
           const sid = (p.seller_id || "").toLowerCase();
 
           let matchedSellerName = "Wholesale Grocery";
-          const isPies =
-            sid.includes("pies") ||
-            sid.includes("razor_pies") ||
-            norm === "cheese";
-          const isCery1 =
-            sid.includes("razorcery_1") ||
-            sid.includes("fresh #1") ||
-            (norm === "flour" && !sid.includes("pies")) ||
-            (norm === "onions" && !sid.includes("razorcery_2"));
-          const isCery2 =
-            sid.includes("razorcery_2") ||
-            sid.includes("dairy & veg #2") ||
-            (norm === "tomatoes" && !sid.includes("razorcery_1"));
+          const isPies = sid.includes("pies") || sid.includes("razor_pies") || norm === "cheese";
+          const isCery1 = sid.includes("razorcery_1") || sid.includes("fresh #1") || (norm === "flour" && !sid.includes("pies")) || (norm === "onions" && !sid.includes("razorcery_2"));
+          const isCery2 = sid.includes("razorcery_2") || sid.includes("dairy & veg #2") || (norm === "tomatoes" && !sid.includes("razorcery_1"));
 
-          if (
-            isPies &&
-            !sid.includes("razorcery_1") &&
-            !sid.includes("razorcery_2")
-          ) {
+          if (isPies && !sid.includes("razorcery_1") && !sid.includes("razorcery_2")) {
             matchedSellerName = "RazorPies";
             setRazorPies((prev) => {
-              const k = Object.keys(prev).find(
-                (key) => normalizeKey(key) === norm,
-              );
+              const k = Object.keys(prev).find((key) => normalizeKey(key) === norm);
               if (k && prev[k]) {
                 return {
                   ...prev,
-                  [k]: {
-                    ...prev[k],
-                    stock: Math.max(0, prev[k].stock - p.quantity),
-                  },
+                  [k]: { ...prev[k], stock: Math.max(0, prev[k].stock - p.quantity) },
                 };
               }
               return prev;
@@ -299,16 +269,11 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
           } else if (isCery1 && !sid.includes("razorcery_2")) {
             matchedSellerName = "Razorcery-1";
             setRazorcery1((prev) => {
-              const k = Object.keys(prev).find(
-                (key) => normalizeKey(key) === norm,
-              );
+              const k = Object.keys(prev).find((key) => normalizeKey(key) === norm);
               if (k && prev[k]) {
                 return {
                   ...prev,
-                  [k]: {
-                    ...prev[k],
-                    stock: Math.max(0, prev[k].stock - p.quantity),
-                  },
+                  [k]: { ...prev[k], stock: Math.max(0, prev[k].stock - p.quantity) },
                 };
               }
               return prev;
@@ -316,16 +281,11 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
           } else if (isCery2) {
             matchedSellerName = "Razorcery-2";
             setRazorcery2((prev) => {
-              const k = Object.keys(prev).find(
-                (key) => normalizeKey(key) === norm,
-              );
+              const k = Object.keys(prev).find((key) => normalizeKey(key) === norm);
               if (k && prev[k]) {
                 return {
                   ...prev,
-                  [k]: {
-                    ...prev[k],
-                    stock: Math.max(0, prev[k].stock - p.quantity),
-                  },
+                  [k]: { ...prev[k], stock: Math.max(0, prev[k].stock - p.quantity) },
                 };
               }
               return prev;
@@ -333,31 +293,21 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
           } else {
             matchedSellerName = "Razorcery-1 & RazorPies";
             setRazorcery1((prev) => {
-              const k = Object.keys(prev).find(
-                (key) => normalizeKey(key) === norm,
-              );
+              const k = Object.keys(prev).find((key) => normalizeKey(key) === norm);
               if (k && prev[k] && prev[k].stock > 0) {
                 return {
                   ...prev,
-                  [k]: {
-                    ...prev[k],
-                    stock: Math.max(0, prev[k].stock - p.quantity),
-                  },
+                  [k]: { ...prev[k], stock: Math.max(0, prev[k].stock - p.quantity) },
                 };
               }
               return prev;
             });
             setRazorPies((prev) => {
-              const k = Object.keys(prev).find(
-                (key) => normalizeKey(key) === norm,
-              );
+              const k = Object.keys(prev).find((key) => normalizeKey(key) === norm);
               if (k && prev[k] && prev[k].stock > 0) {
                 return {
                   ...prev,
-                  [k]: {
-                    ...prev[k],
-                    stock: Math.max(0, prev[k].stock - p.quantity),
-                  },
+                  [k]: { ...prev[k], stock: Math.max(0, prev[k].stock - p.quantity) },
                 };
               }
               return prev;
@@ -380,7 +330,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
         addLog(
           "restocked",
           `Restocked from A2A Groceries`,
-          `Procured: ${purchasedList.map((p) => `${p.quantity}u ${p.item}`).join(", ")} | Groceries stock decremented | Total Paid: ₹${latestResult.total_amount || 0}`,
+          `Procured: ${purchasedList.map((p) => `${p.quantity}u ${p.item}`).join(", ")} | Groceries stock decremented | Total Paid: ₹${latestResult.total_amount || 0}`
         );
 
         const timer = setTimeout(() => {
@@ -391,8 +341,18 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
     }
   }, [latestResult]);
 
-  // Real-time deficit calculation across entire current queue demand
-  const queueTotalRequirements = orderQueue.reduce(
+  // 1. Total Session / Menu Requirements
+  const allSessionOrders = [...completedOrders, ...orderQueue];
+  const totalMenuRequirements = {
+    flour: Math.max(15, allSessionOrders.reduce((sum, o) => sum + (o.recipe.flour || 0), 0)),
+    cheese: Math.max(5, allSessionOrders.reduce((sum, o) => sum + (o.recipe.cheese || 0), 0)),
+    tomatoes: Math.max(3, allSessionOrders.reduce((sum, o) => sum + (o.recipe.tomatoes || 0), 0)),
+    onions: Math.max(2, allSessionOrders.reduce((sum, o) => sum + (o.recipe.onions || 0), 0)),
+    milk: Math.max(4, allSessionOrders.reduce((sum, o) => sum + (o.recipe.milk || 0), 0)),
+  };
+
+  // 2. Active Remaining Queue Demand
+  const remainingQueueDemand = orderQueue.reduce(
     (acc, ord) => {
       acc.flour += ord.recipe.flour || 0;
       acc.cheese += ord.recipe.cheese || 0;
@@ -401,35 +361,55 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
       acc.milk += ord.recipe.milk || 0;
       return acc;
     },
-    { flour: 0, cheese: 0, tomatoes: 0, onions: 0, milk: 0 },
+    { flour: 0, cheese: 0, tomatoes: 0, onions: 0, milk: 0 }
   );
 
-  const deficits = {
-    flour: Math.max(0, queueTotalRequirements.flour - buyerStock.flour),
-    cheese: Math.max(0, queueTotalRequirements.cheese - buyerStock.cheese),
-    tomatoes: Math.max(
-      0,
-      queueTotalRequirements.tomatoes - buyerStock.tomatoes,
-    ),
-    onions: Math.max(0, queueTotalRequirements.onions - buyerStock.onions),
-    milk: Math.max(0, queueTotalRequirements.milk - buyerStock.milk),
+  // Proactive Par Stock & Buffer Calculation (simulation-2.md requirement 2)
+  const computeProactiveReplenishment = (currentPantry: BuyerPantry) => {
+    const itemsToBuy: Array<{ item: string; quantity: number }> = [];
+    const keys: Array<keyof Omit<BuyerPantry, "targetStock">> = [
+      "flour",
+      "cheese",
+      "tomatoes",
+      "onions",
+      "milk",
+    ];
+
+    let hasBelowPar = false;
+    for (const k of keys) {
+      if (currentPantry[k] < PAR_STOCK_LEVELS[k]) {
+        hasBelowPar = true;
+        break;
+      }
+    }
+
+    if (!hasBelowPar) return [];
+
+    // When any item drops below par, evaluate all items and include items below or near par
+    for (const k of keys) {
+      const par = PAR_STOCK_LEVELS[k];
+      const current = currentPantry[k];
+      const buffer = k === "flour" ? 10 : 5; // +10 buffer for flour, +5 buffer for other items
+
+      if (current < par || current <= par + 1) {
+        const deficitToPar = Math.max(0, par - current);
+        const qtyToOrder = deficitToPar + buffer;
+        if (qtyToOrder > 0) {
+          itemsToBuy.push({
+            item: k,
+            quantity: qtyToOrder,
+          });
+        }
+      }
+    }
+
+    return itemsToBuy;
   };
 
-  const totalDeficitUnits =
-    deficits.flour +
-    deficits.cheese +
-    deficits.tomatoes +
-    deficits.onions +
-    deficits.milk;
-
-  // Single Order Processor Engine
+  // Deterministic Kitchen Order Agent: processes next customer order (simulation-2.md requirement 2)
   const processNextOrder = async (): Promise<boolean> => {
     if (orderQueue.length === 0) {
-      addLog(
-        "info",
-        "Queue Complete",
-        "All customer orders have been successfully fulfilled & served!",
-      );
+      addLog("info", "Queue Complete", "All customer orders have been successfully fulfilled & served!");
       setIsAutoSimulating(false);
       return false;
     }
@@ -439,112 +419,133 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
 
     addLog(
       "order_taken",
-      `Order #${currentOrder.id} (${currentOrder.name}) at Front Counter`,
-      `Customer waiting. Checking pantry stock for required ingredients...`,
-      currentOrder.id,
+      `Customer Order #${currentOrder.id} (${currentOrder.name})`,
+      `Customer arrived. Recipe: ${Object.entries(currentOrder.recipe)
+        .map(([k, v]) => `${v} ${k}`)
+        .join(", ")}. Checking kitchen pantry...`,
+      currentOrder.id
     );
 
-    // Calculate deficits specifically for this order
-    const orderDeficits: Array<{ item: string; quantity: number }> = [];
-    (Object.keys(currentOrder.recipe) as Array<keyof BuyerPantry>).forEach(
-      (k) => {
-        if (k === "targetStock") return;
-        const needed = currentOrder.recipe[k] || 0;
-        const current = buyerStock[k] || 0;
-        if (needed > current) {
-          orderDeficits.push({
-            item: k,
-            quantity: needed - current,
-          });
+    // Step 1: Check if pantry can bake this order immediately
+    let canBakeImmediately = true;
+    const immediateDeficits: Array<{ item: string; quantity: number }> = [];
+
+    (Object.keys(currentOrder.recipe) as Array<keyof BuyerPantry>).forEach((k) => {
+      if (k === "targetStock") return;
+      const needed = currentOrder.recipe[k] || 0;
+      const current = buyerStock[k] || 0;
+      if (needed > current) {
+        canBakeImmediately = false;
+        immediateDeficits.push({ item: k, quantity: needed - current });
+      }
+    });
+
+    if (canBakeImmediately) {
+      // 1. Stock available: bake pizza & decrement stock
+      await new Promise((r) => setTimeout(r, 550));
+
+      const updatedStock = { ...buyerStock };
+      (Object.keys(currentOrder.recipe) as Array<keyof BuyerPantry>).forEach((k) => {
+        if (k !== "targetStock" && currentOrder.recipe[k]) {
+          updatedStock[k] = Math.max(0, (updatedStock[k] as number) - (currentOrder.recipe[k] as number));
         }
-      },
-    );
-
-    if (orderDeficits.length === 0) {
-      // 1. Sufficient Stock: Prepare & Serve directly
-      addLog(
-        "kitchen_check",
-        `Stock Available for Order #${currentOrder.id}`,
-        `Pantry contains all ingredients. Preparing ${currentOrder.name}...`,
-        currentOrder.id,
-      );
-
-      await new Promise((r) => setTimeout(r, 650));
-
-      // Decrement pantry stock for the recipe
-      setBuyerStock((prev) => {
-        const updated = { ...prev };
-        (Object.keys(currentOrder.recipe) as Array<keyof BuyerPantry>).forEach(
-          (k) => {
-            if (k !== "targetStock" && currentOrder.recipe[k]) {
-              updated[k] = Math.max(
-                0,
-                (updated[k] as number) - (currentOrder.recipe[k] as number),
-              );
-            }
-          },
-        );
-        return updated;
       });
+      setBuyerStock(updatedStock);
+
+      // Lightweight INVENTORY_EVENT log
+      addLog(
+        "inventory_event",
+        `[INVENTORY_EVENT] Baked ${currentOrder.name} (-${Object.entries(currentOrder.recipe)
+          .map(([k, v]) => `${v} ${k}`)
+          .join(", -")})`,
+        `Pantry updated: Flour=${updatedStock.flour}, Cheese=${updatedStock.cheese}, Tomatoes=${updatedStock.tomatoes}, Onions=${updatedStock.onions}, Milk=${updatedStock.milk}`,
+        currentOrder.id
+      );
 
       // Mark served and shift queue
       const servedOrder = { ...currentOrder, status: "served" as const };
       setOrderQueue((prev) => prev.slice(1));
       setCompletedOrders((prev) => [servedOrder, ...prev]);
-      setActiveProcessingOrder(null);
 
       addLog(
         "order_served",
         `✅ Order #${currentOrder.id} (${currentOrder.name}) SERVED!`,
-        `Delivered to customer! Next order in line is advancing to the counter.`,
-        currentOrder.id,
+        `Delivered to customer! Advancing next order in queue.`,
+        currentOrder.id
       );
 
+      // Step 2: Par Stock Monitor -> Triggers Buyer Agent if stock dropped below par
+      const proactiveReplenishment = computeProactiveReplenishment(updatedStock);
+      if (proactiveReplenishment.length > 0) {
+        addLog(
+          "par_trigger",
+          `⚠️ Par Stock Breach Triggered`,
+          `Stock dropped below par levels! Buyer Agent scanning all pantry items and preparing safe buffer (+10 Flour, +5 others)...`,
+          currentOrder.id
+        );
+
+        addLog(
+          "a2a_procure",
+          `A2A Procurement: ${proactiveReplenishment.map((i) => `+${i.quantity} ${i.item}`).join(", ")}`,
+          `Broadcasting concurrent RFQs with target prices to RazorPies, Razorcery-1, and Razorcery-2...`,
+          currentOrder.id
+        );
+
+        await onRunAi("custom", {
+          itemsToProcure: proactiveReplenishment,
+          buyerStockKg: updatedStock.flour,
+          sellerStockKg: razorPies.cheese.stock + razorcery1.flour.stock + razorcery2.milk.stock,
+          buyerTargetStockKg: 30,
+        });
+      }
+
+      setActiveProcessingOrder(null);
       return true;
     } else {
-      // 2. Deficit detected: Trigger Concurrent A2A Procurement
+      // Stock shortage prevents baking: Trigger immediate replenishment with safe buffer
       addLog(
-        "deficit",
-        `⚠️ Stock Deficit on Order #${currentOrder.id}`,
-        `Missing: ${orderDeficits.map((d) => `${d.quantity}u ${d.item}`).join(", ")}. Triggering autonomous concurrent A2A procurement with Groceries...`,
-        currentOrder.id,
+        "par_trigger",
+        `⚠️ Immediate Stock Shortage on Order #${currentOrder.id}`,
+        `Missing: ${immediateDeficits.map((d) => `${d.quantity}u ${d.item}`).join(", ")}. Triggering A2A Procurement with safe buffer...`,
+        currentOrder.id
       );
+
+      const itemsToProcure = computeProactiveReplenishment(buyerStock);
+      if (itemsToProcure.length === 0) {
+        for (const d of immediateDeficits) {
+          itemsToProcure.push({
+            item: d.item,
+            quantity: d.quantity + (d.item === "flour" ? 10 : 5),
+          });
+        }
+      }
 
       addLog(
         "a2a_procure",
-        `Concurrent RFQ Broadcast`,
-        `Contacting RazorPies, Razorcery-1, Razorcery-2 concurrently for ${orderDeficits.map((d) => `${d.quantity}u ${d.item}`).join(", ")}...`,
-        currentOrder.id,
+        `Broadcasting Concurrent RFQs`,
+        `Procuring ${itemsToProcure.map((i) => `${i.quantity}u ${i.item}`).join(", ")} across A2A sellers with 2-round volume negotiation...`,
+        currentOrder.id
       );
 
-      // Trigger Multi-Item Negotiation
       const res = await onRunAi("custom", {
-        itemsToProcure: orderDeficits,
+        itemsToProcure,
         buyerStockKg: buyerStock.flour,
-        sellerStockKg:
-          razorPies.cheese.stock +
-          razorcery1.flour.stock +
-          razorcery2.milk.stock,
-        buyerTargetStockKg: buyerStock.targetStock,
+        sellerStockKg: razorPies.cheese.stock + razorcery1.flour.stock + razorcery2.milk.stock,
+        buyerTargetStockKg: 30,
       });
 
       if (res && res.status === "CONFIRMED") {
-        await new Promise((r) => setTimeout(r, 700));
+        await new Promise((r) => setTimeout(r, 650));
 
-        // After stock updated, bake and serve the pizza
+        // Decrement stock for the order after restocked
         setBuyerStock((prev) => {
-          const updated = { ...prev };
-          (
-            Object.keys(currentOrder.recipe) as Array<keyof BuyerPantry>
-          ).forEach((k) => {
+          const next = { ...prev };
+          (Object.keys(currentOrder.recipe) as Array<keyof BuyerPantry>).forEach((k) => {
             if (k !== "targetStock" && currentOrder.recipe[k]) {
-              updated[k] = Math.max(
-                0,
-                (updated[k] as number) - (currentOrder.recipe[k] as number),
-              );
+              next[k] = Math.max(0, (next[k] as number) - (currentOrder.recipe[k] as number));
             }
           });
-          return updated;
+          return next;
         });
 
         const servedOrder = { ...currentOrder, status: "served" as const };
@@ -555,17 +556,17 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
         addLog(
           "order_served",
           `✅ Order #${currentOrder.id} (${currentOrder.name}) SERVED!`,
-          `Freshly prepared with restocked ingredients and handed to customer!`,
-          currentOrder.id,
+          `Freshly baked with restocked ingredients and served!`,
+          currentOrder.id
         );
 
         return true;
       } else {
         addLog(
-          "deficit",
-          `Procurement Pending / Policy Pause`,
-          `Order #${currentOrder.id} paused pending human authorization or payment resolution.`,
-          currentOrder.id,
+          "par_trigger",
+          `Procurement Paused / Policy Hold`,
+          `Order #${currentOrder.id} paused pending manager authorization.`,
+          currentOrder.id
         );
         setIsAutoSimulating(false);
         return false;
@@ -579,151 +580,61 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
     if (isAutoSimulating && !isRunning && orderQueue.length > 0) {
       timeoutId = setTimeout(() => {
         processNextOrder();
-      }, 1400);
+      }, 1500);
     } else if (orderQueue.length === 0 && isAutoSimulating) {
       setIsAutoSimulating(false);
     }
     return () => clearTimeout(timeoutId);
   }, [isAutoSimulating, isRunning, orderQueue]);
 
-  // Preset Handlers
-  const applyPreset = (
-    preset: "default" | "stocked" | "no_seller" | "over_cap",
-  ) => {
+  // Preset Handlers (simulation-2.md par stock compliant)
+  const applyPreset = (preset: "default" | "stocked" | "low_par" | "over_cap") => {
     if (preset === "default") {
-      setBuyerStock({
-        cheese: 3,
-        flour: 5,
-        tomatoes: 6,
-        onions: 5,
-        milk: 7,
-        targetStock: 15,
-      });
+      setBuyerStock({ cheese: 5, flour: 30, tomatoes: 6, onions: 5, milk: 7, targetStock: 30 });
       setRazorPies({
-        cheese: { stock: 10, price: 4 },
-        flour: { stock: 6, price: 8 },
-        milk: { stock: 4, price: 9 },
+        cheese: { stock: 15, price: 4 },
+        flour: { stock: 25, price: 8 },
+        milk: { stock: 10, price: 9 },
       });
       setRazorcery1({
-        flour: { stock: 10, price: 6 },
-        tomatoes: { stock: 6, price: 4 },
-        onions: { stock: 4, price: 4 },
+        flour: { stock: 35, price: 6 },
+        tomatoes: { stock: 15, price: 4 },
+        onions: { stock: 15, price: 4 },
       });
       setRazorcery2({
-        milk: { stock: 10, price: 10 },
-        tomatoes: { stock: 6, price: 3 },
-        onions: { stock: 4, price: 5 },
+        milk: { stock: 15, price: 10 },
+        tomatoes: { stock: 15, price: 3 },
+        onions: { stock: 15, price: 5 },
       });
       setOrderQueue(DEFAULT_ORDERS);
       setCompletedOrders([]);
-      addLog(
-        "info",
-        "Reset to Default",
-        "Pantry and Seller inventories restored to default demo values.",
-      );
+      addLog("info", "Reset to Default Setup", "Pantry restored to Par Stock (Flour: 30, Cheese: 5, Tomatoes: 6, Onions: 5, Milk: 7).");
     } else if (preset === "stocked") {
-      setBuyerStock({
-        cheese: 12,
-        flour: 15,
-        tomatoes: 12,
-        onions: 10,
-        milk: 12,
-        targetStock: 15,
-      });
-      addLog(
-        "info",
-        "Stocked Preset",
-        "Pantry stock filled to surplus levels. Orders will fulfill without needing A2A procurement.",
-      );
-    } else if (preset === "no_seller") {
-      setBuyerStock({
-        cheese: 1,
-        flour: 1,
-        tomatoes: 1,
-        onions: 1,
-        milk: 1,
-        targetStock: 15,
-      });
-      setRazorPies({
-        cheese: { stock: 0, price: 4 },
-        flour: { stock: 0, price: 8 },
-        milk: { stock: 0, price: 9 },
-      });
-      setRazorcery1({
-        flour: { stock: 0, price: 6 },
-        tomatoes: { stock: 0, price: 4 },
-        onions: { stock: 0, price: 4 },
-      });
-      setRazorcery2({
-        milk: { stock: 0, price: 10 },
-        tomatoes: { stock: 0, price: 3 },
-        onions: { stock: 0, price: 5 },
-      });
-      addLog(
-        "info",
-        "Zero Seller Stock Preset",
-        "All groceries set to 0 stock to test seller out-of-stock rejection.",
-      );
+      setBuyerStock({ cheese: 15, flour: 50, tomatoes: 20, onions: 15, milk: 20, targetStock: 30 });
+      addLog("info", "Surplus Stock Preset", "Pantry filled with high surplus stock.");
+    } else if (preset === "low_par") {
+      setBuyerStock({ cheese: 3, flour: 20, tomatoes: 4, onions: 3, milk: 4, targetStock: 30 });
+      addLog("par_trigger", "Low Par Stock Preset", "All items set below par stock (Flour: 20/30, Cheese: 3/5, Tomatoes: 4/5) to demonstrate proactive buffer replenishment.");
     } else if (preset === "over_cap") {
-      setBuyerStock({
-        cheese: 0,
-        flour: 0,
-        tomatoes: 0,
-        onions: 0,
-        milk: 0,
-        targetStock: 50,
-      });
-      setRazorPies({
-        cheese: { stock: 50, price: 40 },
-        flour: { stock: 50, price: 50 },
-        milk: { stock: 50, price: 50 },
-      });
-      addLog(
-        "info",
-        "Breach Cap Demo",
-        "Pantry empty and seller prices increased to trigger bounded policy caps.",
-      );
+      setBuyerStock({ cheese: 0, flour: 0, tomatoes: 0, onions: 0, milk: 0, targetStock: 50 });
+      setRazorPies({ cheese: { stock: 50, price: 40 }, flour: { stock: 50, price: 50 }, milk: { stock: 50, price: 50 } });
+      addLog("info", "Breach Cap Demo", "Pantry empty and seller prices set high to demonstrate bounded policy engine caps.");
     }
   };
 
   // Add extra order to queue
-  const handleAddOrder = (
-    recipeType: "margherita" | "farm_fresh" | "shake",
-  ) => {
+  const handleAddOrder = (recipeType: "margherita" | "farm_fresh" | "shake") => {
     const id = nextOrderIdRef.current++;
     let newOrd: CustomerOrder;
     if (recipeType === "margherita") {
-      newOrd = {
-        id,
-        name: "Margherita Pizza",
-        recipe: { flour: 2, cheese: 2, tomatoes: 1 },
-        price: "₹299",
-        status: "queued",
-      };
+      newOrd = { id, name: "Margherita Pizza", recipe: { flour: 5, cheese: 2, tomatoes: 1 }, price: "₹299", status: "queued" };
     } else if (recipeType === "farm_fresh") {
-      newOrd = {
-        id,
-        name: "Farm Fresh Pizza",
-        recipe: { flour: 2, cheese: 1, tomatoes: 1, onions: 2 },
-        price: "₹349",
-        status: "queued",
-      };
+      newOrd = { id, name: "Farm Fresh Pizza", recipe: { flour: 5, cheese: 1, tomatoes: 1, onions: 2 }, price: "₹349", status: "queued" };
     } else {
-      newOrd = {
-        id,
-        name: "Milk Shake",
-        recipe: { milk: 2 },
-        price: "₹120",
-        status: "queued",
-      };
+      newOrd = { id, name: "Milk Shake", recipe: { milk: 2 }, price: "₹120", status: "queued" };
     }
     setOrderQueue((prev) => [...prev, newOrd]);
-    addLog(
-      "order_taken",
-      `New Customer Arrived: Order #${id}`,
-      `Added ${newOrd.name} to the back of the queue.`,
-      id,
-    );
+    addLog("order_taken", `New Customer Arrived: Order #${id}`, `Added ${newOrd.name} to the back of the queue.`, id);
   };
 
   // Steppers for buyer stock
@@ -739,7 +650,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
   const updateSellerStock = (
     seller: "razorPies" | "razorcery1" | "razorcery2",
     item: string,
-    delta: number,
+    delta: number
   ) => {
     if (isRunning) return;
     if (seller === "razorPies") {
@@ -756,31 +667,6 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
       setRazorcery2((prev) => ({
         ...prev,
         [item]: { ...prev[item], stock: Math.max(0, prev[item].stock + delta) },
-      }));
-    }
-  };
-
-  // Stepper for seller price
-  const updateSellerPrice = (
-    seller: "razorPies" | "razorcery1" | "razorcery2",
-    item: string,
-    delta: number,
-  ) => {
-    if (isRunning) return;
-    if (seller === "razorPies") {
-      setRazorPies((prev) => ({
-        ...prev,
-        [item]: { ...prev[item], price: Math.max(1, prev[item].price + delta) },
-      }));
-    } else if (seller === "razorcery1") {
-      setRazorcery1((prev) => ({
-        ...prev,
-        [item]: { ...prev[item], price: Math.max(1, prev[item].price + delta) },
-      }));
-    } else if (seller === "razorcery2") {
-      setRazorcery2((prev) => ({
-        ...prev,
-        [item]: { ...prev[item], price: Math.max(1, prev[item].price + delta) },
       }));
     }
   };
@@ -804,8 +690,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
         style={{
           position: "absolute",
           inset: 0,
-          backgroundImage:
-            "radial-gradient(rgba(13, 148, 251, 0.08) 1px, transparent 1px)",
+          backgroundImage: "radial-gradient(rgba(13, 148, 251, 0.08) 1px, transparent 1px)",
           backgroundSize: "24px 24px",
           pointerEvents: "none",
           opacity: 0.8,
@@ -818,8 +703,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
           style={{
             position: "relative",
             zIndex: 10,
-            background:
-              "linear-gradient(90deg, rgba(16, 185, 129, 0.25) 0%, rgba(13, 148, 251, 0.25) 100%)",
+            background: "linear-gradient(90deg, rgba(16, 185, 129, 0.25) 0%, rgba(13, 148, 251, 0.25) 100%)",
             border: "1px solid #10b981",
             borderRadius: 8,
             padding: "0.6rem 1rem",
@@ -834,9 +718,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
         >
           <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
             <CheckCircle2 size={18} color="#10b981" />
-            <span
-              style={{ fontWeight: 700, color: "#ffffff", fontSize: "0.85rem" }}
-            >
+            <span style={{ fontWeight: 700, color: "#ffffff", fontSize: "0.85rem" }}>
               {restockNotification.text}
             </span>
           </div>
@@ -886,7 +768,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
                 margin: 0,
               }}
             >
-              RazorSlice Kitchen & Multi-Seller A2A Simulation
+              RazorSlice Kitchen Agent & A2A Supply Simulation
             </h2>
           </div>
         </div>
@@ -907,7 +789,23 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
               fontWeight: 600,
             }}
           >
-            Default Setup
+            Default Par Setup
+          </button>
+          <button
+            onClick={() => applyPreset("low_par")}
+            disabled={isRunning}
+            style={{
+              padding: "0.28rem 0.65rem",
+              borderRadius: 6,
+              background: "rgba(245, 158, 11, 0.12)",
+              border: "1px solid rgba(245, 158, 11, 0.3)",
+              fontSize: "0.72rem",
+              color: "#fde68a",
+              cursor: isRunning ? "not-allowed" : "pointer",
+              fontWeight: 600,
+            }}
+          >
+            Below Par Trigger Demo
           </button>
           <button
             onClick={() => applyPreset("stocked")}
@@ -926,7 +824,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
             Surplus Stock
           </button>
           <button
-            onClick={() => applyPreset("no_seller")}
+            onClick={() => applyPreset("over_cap")}
             disabled={isRunning}
             style={{
               padding: "0.28rem 0.65rem",
@@ -939,28 +837,12 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
               fontWeight: 600,
             }}
           >
-            Zero Seller Stock
-          </button>
-          <button
-            onClick={() => applyPreset("over_cap")}
-            disabled={isRunning}
-            style={{
-              padding: "0.28rem 0.65rem",
-              borderRadius: 6,
-              background: "rgba(245, 158, 11, 0.12)",
-              border: "1px solid rgba(245, 158, 11, 0.3)",
-              fontSize: "0.72rem",
-              color: "#fde68a",
-              cursor: isRunning ? "not-allowed" : "pointer",
-              fontWeight: 600,
-            }}
-          >
             Policy Cap Demo
           </button>
         </div>
       </div>
 
-      {/* TOP: Menu Card (Sky blue rounded box matching image.png) */}
+      {/* TOP: Menu Card (Updated with 5-Flour Pizza Recipes) */}
       <div
         style={{
           border: "2px solid #0D94FB",
@@ -988,16 +870,10 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
               letterSpacing: "0.02em",
             }}
           >
-            Menu Recipes
+            Menu Recipes (Par: Flour 30u, Others 5u)
           </span>
-          <span
-            style={{
-              fontSize: "0.7rem",
-              color: "#94a3b8",
-              fontStyle: "italic",
-            }}
-          >
-            Ingredients consumed per order & monitored continuously
+          <span style={{ fontSize: "0.7rem", color: "#94a3b8", fontStyle: "italic" }}>
+            Kitchen Order Agent decrements stock and triggers A2A Buyer on par breach
           </span>
         </div>
 
@@ -1020,7 +896,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
           >
             <div style={{ fontWeight: 700, color: "#38bdf8" }}>Margherita</div>
             <div style={{ color: "#cbd5e1", fontSize: "0.72rem" }}>
-              = -2 Flour, -2 Cheese, -1 Tomato
+              = <strong>-5 Flour</strong>, -2 Cheese, -1 Tomato
             </div>
           </div>
 
@@ -1034,7 +910,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
           >
             <div style={{ fontWeight: 700, color: "#38bdf8" }}>Farm fresh</div>
             <div style={{ color: "#cbd5e1", fontSize: "0.72rem" }}>
-              = -2 Flour, -1 Cheese, -1 Tomato, -2 Onions
+              = <strong>-5 Flour</strong>, -1 Cheese, -1 Tomato, -2 Onions
             </div>
           </div>
 
@@ -1047,19 +923,16 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
             }}
           >
             <div style={{ fontWeight: 700, color: "#38bdf8" }}>Milk shake</div>
-            <div style={{ color: "#cbd5e1", fontSize: "0.72rem" }}>
-              = -2 Milk
-            </div>
+            <div style={{ color: "#cbd5e1", fontSize: "0.72rem" }}>= -2 Milk</div>
           </div>
         </div>
       </div>
 
-      {/* MAIN DIAGRAM CANVAS: RazorSlice + Inventory + Queue + Connections + 3 Sellers */}
+      {/* MAIN DIAGRAM CANVAS: RazorSlice Pantry + Agent + Queue + Connections + 3 Sellers */}
       <div
         style={{
           display: "grid",
-          gridTemplateColumns:
-            "minmax(310px, 1.25fr) 60px minmax(290px, 1.15fr)",
+          gridTemplateColumns: "minmax(310px, 1.25fr) 60px minmax(290px, 1.15fr)",
           gap: "0.5rem",
           alignItems: "start",
           position: "relative",
@@ -1076,7 +949,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
               alignItems: "start",
             }}
           >
-            {/* RazorSlice Inventory Box (Dashed Orange Border) */}
+            {/* RazorSlice Inventory Box (Dashed Orange Border) with Par Stock Indicators */}
             <div
               style={{
                 border: "2px dashed #f59e0b",
@@ -1101,7 +974,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
                     textTransform: "lowercase",
                   }}
                 >
-                  inventory
+                  pantry inventory
                 </span>
                 <span
                   style={{
@@ -1112,47 +985,21 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
                     borderRadius: 4,
                   }}
                 >
-                  Pantry Stock
+                  Par Monitored
                 </span>
               </div>
 
-              <div
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: "0.25rem",
-                }}
-              >
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
                 {[
-                  {
-                    key: "cheese" as const,
-                    name: "cheese",
-                    required: queueTotalRequirements.cheese,
-                  },
-                  {
-                    key: "flour" as const,
-                    name: "flour",
-                    required: queueTotalRequirements.flour,
-                  },
-                  {
-                    key: "tomatoes" as const,
-                    name: "tomatoes",
-                    required: queueTotalRequirements.tomatoes,
-                  },
-                  {
-                    key: "onions" as const,
-                    name: "onions",
-                    required: queueTotalRequirements.onions,
-                  },
-                  {
-                    key: "milk" as const,
-                    name: "milk",
-                    required: queueTotalRequirements.milk,
-                  },
+                  { key: "cheese" as const, name: "cheese", par: PAR_STOCK_LEVELS.cheese, required: totalMenuRequirements.cheese },
+                  { key: "flour" as const, name: "flour", par: PAR_STOCK_LEVELS.flour, required: totalMenuRequirements.flour },
+                  { key: "tomatoes" as const, name: "tomatoes", par: PAR_STOCK_LEVELS.tomatoes, required: totalMenuRequirements.tomatoes },
+                  { key: "onions" as const, name: "onions", par: PAR_STOCK_LEVELS.onions, required: totalMenuRequirements.onions },
+                  { key: "milk" as const, name: "milk", par: PAR_STOCK_LEVELS.milk, required: totalMenuRequirements.milk },
                 ].map((item) => {
                   const currentVal = buyerStock[item.key];
-                  const isDeficit = item.required > currentVal;
-                  const deficit = Math.max(0, item.required - currentVal);
+                  const isBelowPar = currentVal < item.par;
+                  const deficitToPar = Math.max(0, item.par - currentVal);
 
                   return (
                     <div
@@ -1161,12 +1008,8 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
                         display: "flex",
                         alignItems: "center",
                         justifyContent: "space-between",
-                        background: isDeficit
-                          ? "rgba(239, 68, 68, 0.12)"
-                          : "rgba(15, 23, 42, 0.6)",
-                        border: isDeficit
-                          ? "1px solid rgba(239, 68, 68, 0.3)"
-                          : "1px solid transparent",
+                        background: isBelowPar ? "rgba(239, 68, 68, 0.12)" : "rgba(15, 23, 42, 0.6)",
+                        border: isBelowPar ? "1px solid rgba(239, 68, 68, 0.3)" : "1px solid transparent",
                         padding: "0.22rem 0.4rem",
                         borderRadius: 6,
                         transition: "all 0.2s ease",
@@ -1176,29 +1019,23 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
                         <span
                           style={{
                             fontSize: "0.72rem",
-                            color: isDeficit ? "#fca5a5" : "#e2e8f0",
+                            color: isBelowPar ? "#fca5a5" : "#e2e8f0",
                             fontWeight: 600,
                           }}
                         >
                           {item.name}-{currentVal}
                         </span>
                         <span style={{ fontSize: "0.58rem", color: "#94a3b8" }}>
-                          Need {item.required}u{" "}
-                          {isDeficit && (
-                            <strong style={{ color: "#ef4444" }}>
-                              (-{deficit})
-                            </strong>
+                          Par: {item.par}u{" "}
+                          {isBelowPar ? (
+                            <strong style={{ color: "#ef4444" }}>(-{deficitToPar} below par)</strong>
+                          ) : (
+                            <span style={{ color: "#34d399", fontWeight: 600 }}>✓ Above Par</span>
                           )}
                         </span>
                       </div>
 
-                      <div
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: "0.2rem",
-                        }}
-                      >
+                      <div style={{ display: "flex", alignItems: "center", gap: "0.2rem" }}>
                         <button
                           onClick={() => updateBuyerItem(item.key, -1)}
                           disabled={isRunning}
@@ -1221,7 +1058,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
                           style={{
                             fontSize: "0.76rem",
                             fontWeight: 800,
-                            color: isDeficit ? "#f87171" : "#38bdf8",
+                            color: isBelowPar ? "#f87171" : "#38bdf8",
                             minWidth: 14,
                             textAlign: "center",
                           }}
@@ -1263,19 +1100,13 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
                     borderRadius: 4,
                   }}
                 >
-                  target stock = {buyerStock.targetStock}
+                  Flour Par: 30u | Others Par: 5u
                 </div>
               </div>
             </div>
 
             {/* RazorSlice Agent Box + Customer Order Queue */}
-            <div
-              style={{
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-              }}
-            >
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
               <div
                 style={{
                   width: "100%",
@@ -1303,7 +1134,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
                     letterSpacing: "0.02em",
                   }}
                 >
-                  Buyer Agent
+                  Kitchen & Buyer Agent
                 </div>
 
                 <div
@@ -1317,7 +1148,6 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
                   RazorSlice
                 </div>
 
-                {/* Gate at the bottom [----] */}
                 <div
                   style={{
                     width: "85%",
@@ -1375,29 +1205,20 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
                           background: isFront
                             ? "linear-gradient(90deg, rgba(13, 148, 251, 0.22) 0%, rgba(13, 148, 251, 0.08) 100%)"
                             : "rgba(13, 148, 251, 0.06)",
-                          border: isFront
-                            ? "1.5px solid #0D94FB"
-                            : "1px solid rgba(13, 148, 251, 0.2)",
+                          border: isFront ? "1.5px solid #0D94FB" : "1px solid rgba(13, 148, 251, 0.2)",
                           borderRadius: 18,
                           padding: "0.2rem 0.45rem 0.2rem 0.25rem",
-                          boxShadow: isFront
-                            ? "0 0 10px rgba(13, 148, 251, 0.3)"
-                            : "none",
+                          boxShadow: isFront ? "0 0 10px rgba(13, 148, 251, 0.3)" : "none",
                           transition: "all 0.25s ease",
                         }}
                       >
-                        {/* Blue Queue Circle Avatar */}
                         <div
                           style={{
                             width: 20,
                             height: 20,
                             borderRadius: "50%",
-                            border: isFront
-                              ? "2px solid #38bdf8"
-                              : "2px solid #0D94FB",
-                            background: isFront
-                              ? "#0D94FB"
-                              : "rgba(13, 148, 251, 0.3)",
+                            border: isFront ? "2px solid #38bdf8" : "2px solid #0D94FB",
+                            background: isFront ? "#0D94FB" : "rgba(13, 148, 251, 0.3)",
                             display: "flex",
                             alignItems: "center",
                             justifyContent: "center",
@@ -1409,14 +1230,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
                         >
                           {order.id}
                         </div>
-                        <div
-                          style={{
-                            display: "flex",
-                            flexDirection: "column",
-                            minWidth: 0,
-                            flex: 1,
-                          }}
-                        >
+                        <div style={{ display: "flex", flexDirection: "column", minWidth: 0, flex: 1 }}>
                           <span
                             style={{
                               fontSize: "0.68rem",
@@ -1431,13 +1245,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
                             {order.name}
                           </span>
                           {isFront && (
-                            <span
-                              style={{
-                                fontSize: "0.56rem",
-                                color: "#38bdf8",
-                                fontWeight: 700,
-                              }}
-                            >
+                            <span style={{ fontSize: "0.56rem", color: "#38bdf8", fontWeight: 700 }}>
                               Next to fulfill
                             </span>
                           )}
@@ -1468,19 +1276,11 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
             preserveAspectRatio="none"
           >
             <defs>
-              <marker
-                id="arrowhead-white"
-                markerWidth="8"
-                markerHeight="6"
-                refX="7"
-                refY="3"
-                orient="auto"
-              >
+              <marker id="arrowhead-white" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
                 <polygon points="0 0, 8 3, 0 6" fill="#ffffff" />
               </marker>
             </defs>
 
-            {/* Top Arrow: to RazorPies */}
             <path
               d="M 5,75 C 25,75 35,35 55,35"
               fill="none"
@@ -1490,7 +1290,6 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
               markerEnd="url(#arrowhead-white)"
             />
 
-            {/* Middle Arrow: to Razorcery-1 */}
             <path
               d="M 5,85 C 25,85 35,120 55,120"
               fill="none"
@@ -1500,7 +1299,6 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
               markerEnd="url(#arrowhead-white)"
             />
 
-            {/* Bottom Arrow: to Razorcery-2 */}
             <path
               d="M 5,95 C 25,95 35,205 55,205"
               fill="none"
@@ -1513,9 +1311,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
         </div>
 
         {/* RIGHT COLUMN: 3 Sellers (RazorPies, Razorcery-1, Razorcery-2) */}
-        <div
-          style={{ display: "flex", flexDirection: "column", gap: "0.55rem" }}
-        >
+        <div style={{ display: "flex", flexDirection: "column", gap: "0.55rem" }}>
           {/* SELLER 1: RazorPies */}
           <div
             style={{
@@ -1550,13 +1346,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
               >
                 Seller Agent
               </div>
-              <div
-                style={{
-                  fontSize: "0.78rem",
-                  fontWeight: 800,
-                  color: "#ffffff",
-                }}
-              >
+              <div style={{ fontSize: "0.78rem", fontWeight: 800, color: "#ffffff" }}>
                 RazorPies
               </div>
             </div>
@@ -1569,23 +1359,10 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
                 background: "rgba(245, 158, 11, 0.03)",
               }}
             >
-              <div
-                style={{
-                  color: "#f59e0b",
-                  fontSize: "0.68rem",
-                  fontWeight: 800,
-                  marginBottom: "0.2rem",
-                }}
-              >
-                inventory
+              <div style={{ color: "#f59e0b", fontSize: "0.68rem", fontWeight: 800, marginBottom: "0.2rem" }}>
+                catalog inventory
               </div>
-              <div
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: "0.2rem",
-                }}
-              >
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.2rem" }}>
                 {(["cheese", "flour", "milk"] as const).map((it) => (
                   <div
                     key={it}
@@ -1602,13 +1379,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
                     <span style={{ color: "#6ee7b7", fontWeight: 700 }}>
                       ₹{razorPies[it].price}, {it}-{razorPies[it].stock}
                     </span>
-                    <div
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: "0.15rem",
-                      }}
-                    >
+                    <div style={{ display: "flex", alignItems: "center", gap: "0.15rem" }}>
                       <button
                         onClick={() => updateSellerStock("razorPies", it, -1)}
                         disabled={isRunning}
@@ -1686,13 +1457,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
               >
                 Seller Agent
               </div>
-              <div
-                style={{
-                  fontSize: "0.78rem",
-                  fontWeight: 800,
-                  color: "#ffffff",
-                }}
-              >
+              <div style={{ fontSize: "0.78rem", fontWeight: 800, color: "#ffffff" }}>
                 Razorcery-1
               </div>
             </div>
@@ -1705,23 +1470,10 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
                 background: "rgba(245, 158, 11, 0.03)",
               }}
             >
-              <div
-                style={{
-                  color: "#f59e0b",
-                  fontSize: "0.68rem",
-                  fontWeight: 800,
-                  marginBottom: "0.2rem",
-                }}
-              >
-                inventory
+              <div style={{ color: "#f59e0b", fontSize: "0.68rem", fontWeight: 800, marginBottom: "0.2rem" }}>
+                catalog inventory
               </div>
-              <div
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: "0.2rem",
-                }}
-              >
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.2rem" }}>
                 {(["flour", "tomatoes", "onions"] as const).map((it) => (
                   <div
                     key={it}
@@ -1738,13 +1490,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
                     <span style={{ color: "#6ee7b7", fontWeight: 700 }}>
                       ₹{razorcery1[it].price}, {it}-{razorcery1[it].stock}
                     </span>
-                    <div
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: "0.15rem",
-                      }}
-                    >
+                    <div style={{ display: "flex", alignItems: "center", gap: "0.15rem" }}>
                       <button
                         onClick={() => updateSellerStock("razorcery1", it, -1)}
                         disabled={isRunning}
@@ -1822,13 +1568,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
               >
                 Seller Agent
               </div>
-              <div
-                style={{
-                  fontSize: "0.78rem",
-                  fontWeight: 800,
-                  color: "#ffffff",
-                }}
-              >
+              <div style={{ fontSize: "0.78rem", fontWeight: 800, color: "#ffffff" }}>
                 Razorcery-2
               </div>
             </div>
@@ -1841,23 +1581,10 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
                 background: "rgba(245, 158, 11, 0.03)",
               }}
             >
-              <div
-                style={{
-                  color: "#f59e0b",
-                  fontSize: "0.68rem",
-                  fontWeight: 800,
-                  marginBottom: "0.2rem",
-                }}
-              >
-                inventory
+              <div style={{ color: "#f59e0b", fontSize: "0.68rem", fontWeight: 800, marginBottom: "0.2rem" }}>
+                catalog inventory
               </div>
-              <div
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: "0.2rem",
-                }}
-              >
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.2rem" }}>
                 {(["milk", "tomatoes", "onions"] as const).map((it) => (
                   <div
                     key={it}
@@ -1874,13 +1601,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
                     <span style={{ color: "#6ee7b7", fontWeight: 700 }}>
                       ₹{razorcery2[it].price}, {it}-{razorcery2[it].stock}
                     </span>
-                    <div
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: "0.15rem",
-                      }}
-                    >
+                    <div style={{ display: "flex", alignItems: "center", gap: "0.15rem" }}>
                       <button
                         onClick={() => updateSellerStock("razorcery2", it, -1)}
                         disabled={isRunning}
@@ -1942,17 +1663,8 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
         }}
       >
         {/* Left: Quick Add Customer Orders */}
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: "0.4rem",
-            flexWrap: "wrap",
-          }}
-        >
-          <span
-            style={{ fontSize: "0.72rem", color: "#94a3b8", fontWeight: 700 }}
-          >
+        <div style={{ display: "flex", alignItems: "center", gap: "0.4rem", flexWrap: "wrap" }}>
+          <span style={{ fontSize: "0.72rem", color: "#94a3b8", fontWeight: 700 }}>
             + Add to Line:
           </span>
           <button
@@ -2006,14 +1718,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
         </div>
 
         {/* Right: Simulation Action Buttons */}
-        <div
-          style={{
-            display: "flex",
-            gap: "0.5rem",
-            alignItems: "center",
-            flexWrap: "wrap",
-          }}
-        >
+        <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
           {/* Step Next Order Button */}
           <button
             onClick={() => processNextOrder()}
@@ -2024,18 +1729,14 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
               gap: "0.4rem",
               padding: "0.55rem 1rem",
               borderRadius: 8,
-              background:
-                isRunning || orderQueue.length === 0 || isAutoSimulating
-                  ? "#334155"
-                  : "rgba(255, 255, 255, 0.1)",
+              background: isRunning || orderQueue.length === 0 || isAutoSimulating
+                ? "#334155"
+                : "rgba(255, 255, 255, 0.1)",
               border: "1px solid rgba(255, 255, 255, 0.2)",
               color: "#ffffff",
               fontSize: "0.78rem",
               fontWeight: 700,
-              cursor:
-                isRunning || orderQueue.length === 0 || isAutoSimulating
-                  ? "not-allowed"
-                  : "pointer",
+              cursor: isRunning || orderQueue.length === 0 || isAutoSimulating ? "not-allowed" : "pointer",
             }}
           >
             <ArrowRight size={14} />
@@ -2045,9 +1746,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
           {/* Auto-Simulate Toggle Button */}
           <button
             onClick={() => setIsAutoSimulating(!isAutoSimulating)}
-            disabled={
-              isRunning || (orderQueue.length === 0 && !isAutoSimulating)
-            }
+            disabled={isRunning || (orderQueue.length === 0 && !isAutoSimulating)}
             style={{
               display: "inline-flex",
               alignItems: "center",
@@ -2057,16 +1756,13 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
               background: isAutoSimulating
                 ? "linear-gradient(135deg, #dc2626 0%, #991b1b 100%)"
                 : isRunning
-                  ? "#475569"
-                  : "linear-gradient(135deg, #0D94FB 0%, #012652 100%)",
+                ? "#475569"
+                : "linear-gradient(135deg, #0D94FB 0%, #012652 100%)",
               border: "1px solid rgba(255, 255, 255, 0.25)",
               color: "#ffffff",
               fontSize: "0.82rem",
               fontWeight: 800,
-              cursor:
-                isRunning || (orderQueue.length === 0 && !isAutoSimulating)
-                  ? "not-allowed"
-                  : "pointer",
+              cursor: isRunning || (orderQueue.length === 0 && !isAutoSimulating) ? "not-allowed" : "pointer",
               boxShadow: isAutoSimulating
                 ? "0 4px 14px rgba(220, 38, 38, 0.4)"
                 : "0 4px 14px rgba(13, 148, 251, 0.4)",
@@ -2089,7 +1785,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
                     animation: "spin 1s linear infinite",
                   }}
                 />
-                <span>Agents Transacting...</span>
+                <span>Negotiating Deals...</span>
               </>
             ) : (
               <>
@@ -2101,7 +1797,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
         </div>
       </div>
 
-      {/* DEDICATED KITCHEN ORDER FULFILLMENT & EVENT LOG FEED (Requirement 4) */}
+      {/* DEDICATED KITCHEN ORDER EVENT LOG FEED (Visually Distinct from A2A Audit Trail) */}
       <div
         style={{
           marginTop: "1rem",
@@ -2121,18 +1817,14 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
             marginBottom: "0.5rem",
           }}
         >
-          <div
-            style={{ display: "flex", alignItems: "center", gap: "0.45rem" }}
-          >
-            <Clock size={15} color="#38bdf8" />
-            <span
-              style={{ fontSize: "0.78rem", fontWeight: 800, color: "#e2e8f0" }}
-            >
-              Kitchen Order Fulfillment & A2A Event Log
+          <div style={{ display: "flex", alignItems: "center", gap: "0.45rem" }}>
+            <Utensils size={15} color="#38bdf8" />
+            <span style={{ fontSize: "0.78rem", fontWeight: 800, color: "#e2e8f0" }}>
+              Kitchen Order Agent Log (Internal Events)
             </span>
           </div>
           <span style={{ fontSize: "0.68rem", color: "#94a3b8" }}>
-            Real-time trace per order taken, pantry checked, restocked & served
+            Deterministic kitchen runner stock events & par triggers (Distinct from A2A Audit Trace)
           </span>
         </div>
 
@@ -2151,11 +1843,15 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
             let badgeColor = "#38bdf8";
             let borderColor = "rgba(13, 148, 251, 0.3)";
 
-            if (log.type === "order_served") {
+            if (log.type === "inventory_event") {
+              badgeBg = "rgba(13, 148, 136, 0.18)";
+              badgeColor = "#2dd4bf";
+              borderColor = "rgba(13, 148, 136, 0.4)";
+            } else if (log.type === "order_served") {
               badgeBg = "rgba(16, 185, 129, 0.18)";
               badgeColor = "#4ade80";
               borderColor = "rgba(16, 185, 129, 0.4)";
-            } else if (log.type === "deficit") {
+            } else if (log.type === "par_trigger") {
               badgeBg = "rgba(239, 68, 68, 0.18)";
               badgeColor = "#fca5a5";
               borderColor = "rgba(239, 68, 68, 0.4)";
@@ -2210,20 +1906,9 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
                   {log.type.replace("_", " ")}
                 </span>
 
-                <div
-                  style={{
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: "0.1rem",
-                    minWidth: 0,
-                  }}
-                >
-                  <span style={{ fontWeight: 700, color: "#f1f5f9" }}>
-                    {log.title}
-                  </span>
-                  <span style={{ color: "#94a3b8", fontSize: "0.68rem" }}>
-                    {log.detail}
-                  </span>
+                <div style={{ display: "flex", flexDirection: "column", gap: "0.1rem", minWidth: 0 }}>
+                  <span style={{ fontWeight: 700, color: "#f1f5f9" }}>{log.title}</span>
+                  <span style={{ color: "#94a3b8", fontSize: "0.68rem" }}>{log.detail}</span>
                 </div>
               </div>
             );

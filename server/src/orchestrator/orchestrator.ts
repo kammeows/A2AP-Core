@@ -219,10 +219,19 @@ export async function runNegotiation(
   let lastChosenOffer: OfferPayload | undefined;
   let overallApproved = true;
 
-  // Process all deficit items concurrently across the A2A seller network
+  // Process all deficit items concurrently across the A2A seller network with a hard 2-round cap
   for (const it of itemsList) {
     const item = it.item;
     const deficitQuantity = it.quantity;
+
+    // Strategic buyer target price below catalog list rates (simulation-2.md requirement 3)
+    let targetPricePerUnit = 3.5;
+    const norm = item.toLowerCase().replace(/s$/, "");
+    if (norm === "cheese") targetPricePerUnit = 3.2;
+    else if (norm === "flour") targetPricePerUnit = 5.0;
+    else if (norm === "tomato") targetPricePerUnit = 2.8;
+    else if (norm === "onion") targetPricePerUnit = 3.2;
+    else if (norm === "milk") targetPricePerUnit = 7.5;
 
     let matchingSellers: AgentCard[];
     if (scenario === "happy" || scenario === "failure") {
@@ -236,6 +245,7 @@ export async function runNegotiation(
           description: "Wholesale produce vendor",
         },
       ];
+      targetPricePerUnit = 28.0;
     } else {
       const agentCards = InventoryStore.getAgentCards();
       matchingSellers = agentCards.filter((card) =>
@@ -243,7 +253,7 @@ export async function runNegotiation(
           (si) =>
             si.toLowerCase().includes(item.toLowerCase()) ||
             item.toLowerCase().includes(si.toLowerCase()) ||
-            si.toLowerCase().replace(/s$/, "") === item.toLowerCase().replace(/s$/, "")
+            si.toLowerCase().replace(/s$/, "") === norm
         )
       );
       if (matchingSellers.length === 0) {
@@ -266,33 +276,93 @@ export async function runNegotiation(
       quality_min: "Grade A",
       needed_by: tomorrow,
       buyer_max_price_per_kg: policy.per_unit_price_ceiling[item] || 35,
+      target_price_per_unit: targetPricePerUnit,
       ...params.customRfq,
     };
 
-    // Broadcast RFQs concurrently
+    // ==========================================
+    // ROUND 1: Broadcast RFQs with Target Price
+    // ==========================================
     for (const seller of matchingSellers) {
       logEnvelope(threadId, "RFQ", BUYER_ID, seller.agent_id, {
         ...rfqBase,
         target_seller_id: seller.agent_id,
         seller_name: seller.name,
-        narrative: `RazorSlice requested wholesale quote for ${rfqBase.quantity_kg} units of ${rfqBase.item} from ${seller.name}.`,
+        target_price_per_unit: targetPricePerUnit,
+        narrative: `RazorSlice requested wholesale quote for ${rfqBase.quantity_kg} units of ${rfqBase.item} from ${seller.name} with target price ₹${targetPricePerUnit}/unit.`,
       });
     }
 
-    // Collect Quotes concurrently
+    // Collect Round 1 Quotes
     const sellerOfferPromises = matchingSellers.map((seller) =>
       sellerRespondToRfq(rfqBase, seller.agent_id)
     );
-    const sellerOffers = await Promise.all(sellerOfferPromises);
+    let sellerOffers = await Promise.all(sellerOfferPromises);
 
     for (const offer of sellerOffers) {
       logEnvelope(threadId, "OFFER", offer.seller_id || "agent:seller", BUYER_ID, {
         ...offer,
-        narrative: `Wholesale quote: ${offer.quantity_kg} units at ₹${offer.final_price_per_kg}/unit (Total ₹${offer.total_price}) with ${offer.discount_pct}% discount.`,
+        narrative: `Wholesale quote (Round 1): ${offer.quantity_kg} units at ₹${offer.final_price_per_kg}/unit (Total ₹${offer.total_price}) with ${offer.discount_pct}% discount.`,
       });
     }
 
-    // Evaluate quotes using Buyer Agent
+    // =========================================================================
+    // ROUND 2: Counter-Offer trading volume commitment for better unit rate
+    // (simulation-2.md requirement 3 & 4)
+    // =========================================================================
+    if (scenario === "custom" && allowRenegotiation && matchingSellers.length > 0) {
+      const revisedOffers: OfferPayload[] = [];
+      let hadCounter = false;
+
+      for (const initialOffer of sellerOffers) {
+        // If the seller's quote didn't reach the buyer's target price, counter with more volume commitment
+        if (initialOffer.final_price_per_kg > targetPricePerUnit) {
+          hadCounter = true;
+          const committedQty = Math.max(initialOffer.quantity_kg + 3, Math.ceil(initialOffer.quantity_kg * 1.35));
+          const targetSellerId = initialOffer.seller_id || "agent:seller";
+
+          logEnvelope(threadId, "COUNTER_OFFER", BUYER_ID, targetSellerId, {
+            item,
+            quantity_kg: committedQty,
+            target_price_per_unit: targetPricePerUnit,
+            narrative: `Volume Commitment Counter: "I'll commit to ${committedQty} units instead of ${initialOffer.quantity_kg} units if you do ₹${targetPricePerUnit.toFixed(2)}/unit."`,
+          });
+
+          // Seller evaluates counter and concedes partway, bounded by code-enforced floor price
+          const counterRfq: RfqPayload = {
+            item,
+            quantity_kg: committedQty,
+            quality_min: "Grade A",
+            needed_by: tomorrow,
+            buyer_max_price_per_kg: policy.per_unit_price_ceiling[item] || 35,
+            target_price_per_unit: targetPricePerUnit,
+          };
+
+          const revisedOffer = await sellerRespondToRfq(counterRfq, targetSellerId);
+          logEnvelope(threadId, "OFFER", targetSellerId, BUYER_ID, {
+            ...revisedOffer,
+            narrative: `Revised quote (Round 2): ${revisedOffer.quantity_kg} units at ₹${revisedOffer.final_price_per_kg}/unit (Total ₹${revisedOffer.total_price}) after volume concession.`,
+          });
+
+          revisedOffers.push(revisedOffer);
+        } else {
+          revisedOffers.push(initialOffer);
+        }
+      }
+
+      if (hadCounter) {
+        sellerOffers = revisedOffers;
+
+        // Enforce Hard Round Cap (simulation-2.md requirement 5)
+        logEnvelope(threadId, "ROUND_CAP_REACHED", POLICY_ENGINE_ID, BUYER_ID, {
+          round_count: 2,
+          round_limit: 2,
+          narrative: "round_cap_reached: buyer proceeding with best available offer",
+        });
+      }
+    }
+
+    // Evaluate final offers using Buyer Agent (Single lowest quote vs Multi-seller split deal)
     const buyerDecision: BuyerDecision = await buyerEvaluateOffer(
       sellerOffers[0],
       restaurantProfile,

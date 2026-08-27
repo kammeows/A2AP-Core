@@ -2,11 +2,13 @@ export type MessageType =
   | "RFQ" // request for quotation -> buyer asks the seller agent for a price quote
   | "OFFER" // seller agent replies with pricing, discounts, delivery dates, upsell
   | "COUNTER_OFFER" // buyer requests an adjusted quantity or price
+  | "ROUND_CAP_REACHED" // orchestrator enforces hard limit on negotiation rounds
   | "ACCEPT" // buyer agent proposes to accept a single offer
   | "SPLIT_ACCEPT" // buyer agent proposes to accept a split multi-seller deal
   | "UPSELL_DECLINE" // buyer agent declines unsolicited upsell item (e.g. not on menu)
   | "UPSELL_ACCEPT" // buyer agent accepts valuable upsell item within budget
   | "REJECT" // an outright rejection of the offer
+  | "INVENTORY_EVENT" // lightweight kitchen order fulfillment event
   | "POLICY_CHECK" // system-generated, deterministic policy engine evaluates the proposed deal
   | "ORDER_CREATE" // system event where razorpay orders api is called to make an order
   | "ORDER_CONFIRM"

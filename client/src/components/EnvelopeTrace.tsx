@@ -125,6 +125,20 @@ export const EnvelopeTrace: React.FC<EnvelopeTraceProps> = ({
           color: "#047857",
           label: "ORDER CONFIRMED (Test Paid)",
         };
+      case "ROUND_CAP_REACHED":
+        return {
+          bg: "#fffbeb",
+          border: "#f59e0b",
+          color: "#b45309",
+          label: "ROUND CAP REACHED (Max 2 Rounds)",
+        };
+      case "INVENTORY_EVENT":
+        return {
+          bg: "#f0fdfa",
+          border: "#0d9488",
+          color: "#0f766e",
+          label: "INVENTORY EVENT (Kitchen Order)",
+        };
       case "ORDER_FAIL":
         return {
           bg: "#fef2f2",
