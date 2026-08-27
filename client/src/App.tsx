@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Header } from './components/Header';
-import { StockConfigurator } from './components/StockConfigurator';
+import { RazorSliceArchitecture } from './components/RazorSliceArchitecture';
 import { EnvelopeTrace } from './components/EnvelopeTrace';
 import { MobileDevice } from './components/MobileDevice';
 import {
@@ -230,53 +230,51 @@ export const App: React.FC = () => {
 
   return (
     <div className="app-container">
-      {/* Top Header */}
+      {/* 1. Top Navbar: Completely sticking to the top as a proper sharp rectangle */}
       <Header
         onReset={handleReset}
         isResetting={isResetting}
         delegationMode={delegationMode}
       />
 
-      {/* 2-Column Split Layout */}
-      <div className="main-grid">
-        {/* Left Column: Stock Sliders + Audit Trace */}
-        <div>
-          {/* 1. Stock Configurator */}
-          <StockConfigurator
-            buyerStockKg={buyerStockKg}
-            setBuyerStockKg={setBuyerStockKg}
-            sellerStockKg={sellerStockKg}
-            setSellerStockKg={setSellerStockKg}
-            buyerTargetStockKg={buyerTargetStockKg}
-            setBuyerTargetStockKg={setBuyerTargetStockKg}
-            onRunAi={handleRunAi}
-            isRunning={isRunning}
-            delegationMode={delegationMode}
-          />
+      {/* Main Content Layout */}
+      <div className="main-content-wrapper">
+        {/* 2-Column Split: Left Side (Canvas + Trace) and Right Side (Phone taking lesser amount) */}
+        <div className="main-grid">
+          {/* Left Column: Divided vertically into Top (RazorSlice Architecture) and Bottom (Audit Trace) */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+            {/* Top Left Corner: What main-idea.md & image.png specify */}
+            <RazorSliceArchitecture
+              onRunAi={handleRunAi}
+              isRunning={isRunning}
+              delegationMode={delegationMode}
+              latestResult={latestResult}
+            />
 
-          {/* 2. Explainable Envelope Trace */}
-          <EnvelopeTrace
-            messages={messages}
-            threadId={activeThreadId}
-            isLoading={isRunning}
-          />
-        </div>
+            {/* Bottom Left: Left as it is (Explainable Envelope Trace) */}
+            <EnvelopeTrace
+              messages={messages}
+              threadId={activeThreadId}
+              isLoading={isRunning}
+            />
+          </div>
 
-        {/* Right Column: Mobile Interface */}
-        <div>
-          <MobileDevice
-            delegationMode={delegationMode}
-            setDelegationMode={handleModeChange}
-            pendingOffer={pendingOffer}
-            onConfirmTransaction={handleConfirmTransaction}
-            isConfirming={isConfirming}
-            latestResult={latestResult}
-            weekSpentSoFar={weekSpentSoFar}
-            weeklyBudgetCap={weeklyBudgetCap}
-            perTransactionCap={perTransactionCap}
-            simulatePaymentFail={simulatePaymentFail}
-            setSimulatePaymentFail={setSimulatePaymentFail}
-          />
+          {/* Right Column: Phone side taking a lesser amount */}
+          <div>
+            <MobileDevice
+              delegationMode={delegationMode}
+              setDelegationMode={handleModeChange}
+              pendingOffer={pendingOffer}
+              onConfirmTransaction={handleConfirmTransaction}
+              isConfirming={isConfirming}
+              latestResult={latestResult}
+              weekSpentSoFar={weekSpentSoFar}
+              weeklyBudgetCap={weeklyBudgetCap}
+              perTransactionCap={perTransactionCap}
+              simulatePaymentFail={simulatePaymentFail}
+              setSimulatePaymentFail={setSimulatePaymentFail}
+            />
+          </div>
         </div>
       </div>
     </div>

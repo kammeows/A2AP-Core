@@ -47,15 +47,28 @@ export const Header: React.FC<HeaderProps> = ({
           >
             <h1
               style={{
-                fontSize: "1.25rem",
+                fontSize: "1.15rem",
                 fontWeight: 800,
                 color: "#ffffff",
                 letterSpacing: "-0.01em",
                 margin: 0,
               }}
             >
-              A2A Bounded Procurement Agent
+              RazorSlice A2A Bounded Procurement
             </h1>
+            <span
+              style={{
+                fontSize: "0.68rem",
+                fontWeight: 700,
+                color: "#93c5fd",
+                background: "rgba(255, 255, 255, 0.1)",
+                padding: "0.15rem 0.45rem",
+                borderRadius: 4,
+                border: "1px solid rgba(255, 255, 255, 0.15)",
+              }}
+            >
+              Restaurant #42
+            </span>
           </div>
         </div>
       </div>
