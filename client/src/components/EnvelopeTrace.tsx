@@ -83,6 +83,27 @@ export const EnvelopeTrace: React.FC<EnvelopeTraceProps> = ({
           color: "#15803d",
           label: "PROPOSE ACCEPT (Awaiting Policy)",
         };
+      case "SPLIT_ACCEPT":
+        return {
+          bg: "#ecfeff",
+          border: "#0891b2",
+          color: "#0e7490",
+          label: "PROPOSE SPLIT ACCEPT (Multi-Seller)",
+        };
+      case "UPSELL_DECLINE":
+        return {
+          bg: "#fff1f2",
+          border: "#e11d48",
+          color: "#be123c",
+          label: "UPSELL DECLINED (Not in Menu / Cap)",
+        };
+      case "UPSELL_ACCEPT":
+        return {
+          bg: "#f0fdf4",
+          border: "#16a34a",
+          color: "#15803d",
+          label: "UPSELL ACCEPTED (Recipe Validated)",
+        };
       case "POLICY_CHECK":
         return {
           bg: "#fefce8",
@@ -129,17 +150,35 @@ export const EnvelopeTrace: React.FC<EnvelopeTraceProps> = ({
   };
 
   const getActorLabel = (actor: string) => {
-    if (actor.includes("buyer"))
+    if (actor.includes("razor_pies"))
       return {
-        label: "Buyer Agent",
+        label: "RazorPies",
+        icon: <Bot size={13} color="#10b981" />,
+        color: "#10b981",
+      };
+    if (actor.includes("razorcery_1"))
+      return {
+        label: "Razorcery-1",
+        icon: <Bot size={13} color="#10b981" />,
+        color: "#10b981",
+      };
+    if (actor.includes("razorcery_2"))
+      return {
+        label: "Razorcery-2",
+        icon: <Bot size={13} color="#10b981" />,
+        color: "#10b981",
+      };
+    if (actor.includes("razorslice") || actor.includes("buyer"))
+      return {
+        label: "RazorSlice (Buyer)",
         icon: <Bot size={13} color="#0D94FB" />,
         color: "#0D94FB",
       };
     if (actor.includes("seller"))
       return {
         label: "Seller Agent",
-        icon: <Bot size={13} color="#012652" />,
-        color: "#012652",
+        icon: <Bot size={13} color="#10b981" />,
+        color: "#10b981",
       };
     if (actor.includes("policy_engine"))
       return {
@@ -583,6 +622,56 @@ export const EnvelopeTrace: React.FC<EnvelopeTraceProps> = ({
                         LLM proposes deal $\rightarrow$ Policy Engine
                         mathematically evaluates before payment
                       </span>
+                    </div>
+                  )}
+
+                  {/* SPLIT_ACCEPT Payload */}
+                  {envelope.type === "SPLIT_ACCEPT" && (
+                    <div>
+                      <p style={{ color: "#0e7490", fontWeight: 700 }}>
+                        {envelope.payload.rationale ||
+                          "Multi-seller split procurement proposed for total cost optimization."}
+                      </p>
+                      {envelope.payload.split_deal?.splits && (
+                        <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.4rem", flexWrap: "wrap" }}>
+                          {envelope.payload.split_deal.splits.map((s: any, sIdx: number) => (
+                            <div
+                              key={sIdx}
+                              style={{
+                                background: "#f0fdfa",
+                                border: "1px solid #99f6e4",
+                                borderRadius: 6,
+                                padding: "0.35rem 0.6rem",
+                                fontSize: "0.74rem",
+                                color: "#115e59",
+                              }}
+                            >
+                              <strong>{s.seller_id}</strong>: {s.quantity_kg} units @ ₹{s.unit_price} = <strong>₹{s.total_price}</strong>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      <div style={{ marginTop: "0.35rem", fontSize: "0.76rem", fontWeight: 800, color: "#0f766e" }}>
+                        Total Split Value: ₹{envelope.payload.total_cost}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* UPSELL_DECLINE Payload */}
+                  {envelope.type === "UPSELL_DECLINE" && (
+                    <div style={{ background: "#fff1f2", padding: "0.45rem 0.65rem", borderRadius: 6, border: "1px solid #fecdd3" }}>
+                      <p style={{ color: "#be123c", fontWeight: 600, fontSize: "0.78rem" }}>
+                        {envelope.payload.narrative || envelope.payload.reason}
+                      </p>
+                    </div>
+                  )}
+
+                  {/* UPSELL_ACCEPT Payload */}
+                  {envelope.type === "UPSELL_ACCEPT" && (
+                    <div style={{ background: "#f0fdf4", padding: "0.45rem 0.65rem", borderRadius: 6, border: "1px solid #bbf7d0" }}>
+                      <p style={{ color: "#15803d", fontWeight: 600, fontSize: "0.78rem" }}>
+                        {envelope.payload.narrative || "Accepted recipe-validated bundle upsell within budget."}
+                      </p>
                     </div>
                   )}
 

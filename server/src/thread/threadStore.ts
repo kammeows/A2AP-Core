@@ -4,7 +4,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Envelope } from "../types/messages.js";
 
-// Determine directory and database file path
 let dbDir: string;
 try {
   const __filename = fileURLToPath(import.meta.url);
@@ -21,15 +20,13 @@ if (!fs.existsSync(dbDir)) {
 const dbPath = process.env.DB_PATH || path.join(dbDir, "a2a.db");
 export const db = new Database(dbPath, { timeout: 10000 });
 
-// Enable WAL mode for high concurrency and resilience
 try {
   db.pragma("journal_mode = WAL");
   db.pragma("busy_timeout = 10000");
 } catch {
-  // Pragma may fail in restricted/memory modes
+  // Pragma fallback
 }
 
-// Ensure the messages table exists
 db.exec(`
   CREATE TABLE IF NOT EXISTS messages (
     message_id TEXT PRIMARY KEY,
@@ -43,9 +40,6 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id);
 `);
 
-/**
- * Appends a new message envelope to the audit trail.
- */
 export function appendMessage(envelope: Envelope): void {
   const stmt = db.prepare(`
     INSERT INTO messages (message_id, thread_id, timestamp, from_agent, to_agent, type, payload)
@@ -63,9 +57,6 @@ export function appendMessage(envelope: Envelope): void {
   );
 }
 
-/**
- * Retrieves all messages for a specific thread, ordered chronologically.
- */
 export function getThread(threadId: string): Envelope[] {
   const stmt = db.prepare(`
     SELECT message_id, thread_id, timestamp, from_agent as "from", to_agent as "to", type, payload
@@ -95,30 +86,42 @@ export function getThread(threadId: string): Envelope[] {
   }));
 }
 
-/**
- * Clears all messages belonging to a given thread (useful for testing and resets).
- */
 export function clearThread(threadId: string): void {
   const stmt = db.prepare(`DELETE FROM messages WHERE thread_id = ?`);
   stmt.run(threadId);
 }
 
-/**
- * Clears all messages from the entire table.
- */
 export function clearAll(): void {
   const stmt = db.prepare(`DELETE FROM messages`);
   stmt.run();
 }
 
-/**
- * ThreadStore class wrapper for convenience.
- */
 export class ThreadStore {
   static appendMessage = appendMessage;
   static getThread = getThread;
   static clearThread = clearThread;
   static clearAll = clearAll;
+  static getConfirmedSpendingForAgent(buyerId: string): number {
+    const stmt = db.prepare(`
+      SELECT payload FROM messages
+      WHERE from_agent = ? AND type = 'ORDER_CREATE'
+    `);
+    const rows = stmt.all(buyerId) as Array<{ payload: string }>;
+    let total = 0;
+    for (const r of rows) {
+      try {
+        const p = JSON.parse(r.payload);
+        if (typeof p.total_price === "number") {
+          total += p.total_price;
+        } else if (typeof p.amount === "number") {
+          total += p.amount / 100;
+        }
+      } catch {
+        // ignore
+      }
+    }
+    return total;
+  }
 }
 
 export default ThreadStore;

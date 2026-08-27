@@ -82,7 +82,10 @@ export const App: React.FC = () => {
   };
 
   // Run AI Procurement Run
-  const handleRunAi = async (scenario: 'happy' | 'failure' | 'custom' = 'custom') => {
+  const handleRunAi = async (
+    scenario: 'happy' | 'failure' | 'custom' = 'custom',
+    customOptions?: any
+  ) => {
     setIsRunning(true);
     setPendingOffer(null);
     setLatestResult(null);
@@ -90,11 +93,14 @@ export const App: React.FC = () => {
     try {
       const result = await triggerNegotiation({
         scenario,
-        buyerStockKg,
-        sellerStockKg,
-        buyerTargetStockKg,
+        buyerStockKg: customOptions?.buyerStockKg ?? buyerStockKg,
+        sellerStockKg: customOptions?.sellerStockKg ?? sellerStockKg,
+        buyerTargetStockKg: customOptions?.buyerTargetStockKg ?? buyerTargetStockKg,
         delegationMode,
         simulatePaymentFail,
+        itemToProcure: customOptions?.itemToProcure,
+        quantityNeeded: customOptions?.quantityNeeded,
+        customRfq: customOptions?.customRfq,
       });
 
       setLatestResult(result);

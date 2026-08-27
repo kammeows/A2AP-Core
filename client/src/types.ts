@@ -3,11 +3,24 @@ export type MessageType =
   | "OFFER"
   | "COUNTER_OFFER"
   | "ACCEPT"
+  | "SPLIT_ACCEPT"
+  | "UPSELL_DECLINE"
+  | "UPSELL_ACCEPT"
   | "REJECT"
   | "POLICY_CHECK"
   | "ORDER_CREATE"
   | "ORDER_CONFIRM"
   | "ORDER_FAIL";
+
+export interface AgentCard {
+  agent_id: string;
+  name: string;
+  stocked_items: string[];
+  catalog: Record<string, { base_price: number; stock: number; unit?: string }>;
+  discount_tiers?: Record<string, { min_quantity: number; discount_pct: number }[]>;
+  negotiable: boolean;
+  description: string;
+}
 
 export interface Envelope {
   message_id: string;
@@ -55,6 +68,14 @@ export interface BuyerInventory {
   reorder_threshold_kg: number;
 }
 
+export interface UpsellItem {
+  item: string;
+  quantity_kg: number;
+  unit_price: number;
+  discount_pct?: number;
+  reason?: string;
+}
+
 export interface OfferPayload {
   item: string;
   quantity_kg: number;
@@ -66,15 +87,33 @@ export interface OfferPayload {
   total_price: number;
   delivery_by: string;
   offer_expires: string;
+  seller_id?: string;
   rationale?: string;
+  upsell_item?: UpsellItem;
+}
+
+export interface SplitAcceptItem {
+  seller_id: string;
+  item: string;
+  quantity_kg: number;
+  unit_price: number;
+  total_price: number;
+}
+
+export interface SplitAcceptPayload {
+  item: string;
+  total_quantity_kg: number;
+  total_cost: number;
+  splits: SplitAcceptItem[];
+  rationale: string;
 }
 
 export interface RfqPayload {
   item: string;
   quantity_kg: number;
-  quality_min: string;
-  needed_by: string;
-  buyer_max_price_per_kg: number;
+  quality_min?: string;
+  needed_by?: string;
+  buyer_max_price_per_kg?: number;
 }
 
 export interface NegotiationResult {

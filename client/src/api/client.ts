@@ -63,6 +63,9 @@ export async function triggerNegotiation(params: {
   buyerTargetStockKg?: number;
   delegationMode?: 'full' | 'partial';
   simulatePaymentFail?: boolean;
+  itemToProcure?: string;
+  quantityNeeded?: number;
+  customRfq?: any;
 }): Promise<NegotiationResult> {
   const res = await fetch(`${API_BASE}/negotiate`, {
     method: 'POST',

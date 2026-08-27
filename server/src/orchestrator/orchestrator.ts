@@ -4,36 +4,69 @@ import { sellerRespondToRfq } from "../agents/sellerAgent.js";
 import { buyerEvaluateOffer } from "../agents/buyerAgent.js";
 import { razorpayClient } from "../payments/razorpayClient.js";
 import { Envelope, MessageType } from "../types/messages.js";
-import { RfqPayload, OfferPayload, RestaurantProfile } from "../types/domain.js";
+import {
+  RfqPayload,
+  OfferPayload,
+  RestaurantProfile,
+  SplitAcceptPayload,
+  BuyerDecision,
+  AgentCard,
+} from "../types/domain.js";
 import { PolicyConfig, PolicyResult } from "../types/policy.js";
+import { InventoryStore } from "../inventory/inventoryStore.js";
 
-const BUYER_ID = "agent:buyer:restaurant_42";
-const SELLER_ID = "agent:seller:veggie_vendor_09";
-const POLICY_ENGINE_ID = "system:policy_engine";
-const RAZORPAY_SYSTEM_ID = "system:razorpay";
-const MIN_VIABLE_QUANTITY = 20;
+export const BUYER_ID = "agent:buyer:razorslice";
+export const POLICY_ENGINE_ID = "system:policy_engine";
+export const RAZORPAY_SYSTEM_ID = "system:razorpay";
+export const HUMAN_MANAGER_ID = "system:human_escalation";
+export const MIN_VIABLE_QUANTITY = 1;
 
 export const defaultBuyerPolicy: PolicyConfig = {
   agent_id: BUYER_ID,
   delegation_mode: "full",
   weekly_budget_cap: 2000,
   per_transaction_cap: 1600,
-  per_unit_price_ceiling: { tomato: 35 },
-  seller_allowlist: [SELLER_ID],
+  per_unit_price_ceiling: {
+    cheese: 35,
+    flour: 35,
+    tomato: 35,
+    tomatoes: 35,
+    onion: 35,
+    onions: 35,
+    milk: 35,
+  },
+  seller_allowlist: [
+    "agent:seller:razor_pies",
+    "agent:seller:razorcery_1",
+    "agent:seller:razorcery_2",
+    "agent:seller:veggie_vendor_09",
+  ],
 };
 
 export interface NegotiationResult {
   thread_id: string;
   scenario: "happy" | "failure" | "custom";
-  status: "CONFIRMED" | "RENEGOTIATED_AND_CONFIRMED" | "ESCALATED_POLICY_VIOLATION" | "REJECTED";
+  status:
+    | "CONFIRMED"
+    | "AWAITING_CONFIRMATION"
+    | "RENEGOTIATED_AND_CONFIRMED"
+    | "ESCALATED_POLICY_VIOLATION"
+    | "NO_SELLER_FOUND"
+    | "NO_PURCHASE_NEEDED"
+    | "PAYMENT_FAILED"
+    | "REJECTED";
   final_message_type: MessageType;
   order_id?: string;
   total_amount?: number;
+  pending_offer?: OfferPayload;
   policy_checks?: PolicyResult["checks"];
+  message?: string;
+  buyer_stock?: number;
+  seller_stock?: number;
 }
 
 let msgCounter = 0;
-function logEnvelope(
+export function logEnvelope(
   threadId: string,
   type: MessageType,
   from: string,
@@ -54,36 +87,7 @@ function logEnvelope(
   return envelope;
 }
 
-export function buildRfq(
-  scenario: "happy" | "failure" | "custom",
-  customParams?: Partial<RfqPayload>
-): RfqPayload {
-  const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
-
-  if (scenario === "failure") {
-    // 75kg tomatoes at 18% tier (₹26.24/kg) = ₹1,968, which deliberately exceeds the ₹1,600 cap
-    return {
-      item: "tomato",
-      quantity_kg: 75,
-      quality_min: "Grade A",
-      needed_by: tomorrow,
-      buyer_max_price_per_kg: 35,
-      ...customParams,
-    };
-  }
-
-  // Happy path: 50kg tomatoes at 10% discount (₹28.8/kg) = ₹1,440, comfortably within ₹1,600 cap
-  return {
-    item: "tomato",
-    quantity_kg: 50,
-    quality_min: "Grade A",
-    needed_by: tomorrow,
-    buyer_max_price_per_kg: 35,
-    ...customParams,
-  };
-}
-
-function getWeekSpent(buyerId: string): number {
+export function getWeekSpent(buyerId: string = BUYER_ID): number {
   try {
     const stmt = db.prepare(`
       SELECT payload FROM messages
@@ -109,17 +113,117 @@ function getWeekSpent(buyerId: string): number {
   }
 }
 
-/**
- * Runs a complete Agent-to-Agent negotiation lifecycle.
- * Coordinates Buyer Agent -> Seller Agent -> Policy Engine -> Razorpay Orders API.
- */
+export function getPolicyConfig(agentId: string = BUYER_ID): PolicyConfig {
+  try {
+    const row = db.prepare(`SELECT config FROM policy_configs WHERE agent_id = ?`).get(agentId) as
+      | { config: string }
+      | undefined;
+    if (row) {
+      return JSON.parse(row.config);
+    }
+    return defaultBuyerPolicy;
+  } catch {
+    return defaultBuyerPolicy;
+  }
+}
+
+export interface RunNegotiationParams {
+  threadId?: string;
+  scenario?: "happy" | "failure" | "custom";
+  customRfq?: Partial<RfqPayload>;
+  allowRenegotiation?: boolean;
+  buyerStockKg?: number;
+  sellerStockKg?: number;
+  buyerTargetStockKg?: number;
+  delegationMode?: "full" | "partial";
+  simulatePaymentFail?: boolean;
+  itemToProcure?: string;
+  quantityNeeded?: number;
+}
+
 export async function runNegotiation(
-  threadId: string = `thread_${Date.now().toString(36)}`,
-  scenario: "happy" | "failure" | "custom" = "happy",
-  customRfq?: Partial<RfqPayload>,
-  allowRenegotiation: boolean = true
+  paramsOrThreadId?: RunNegotiationParams | string,
+  scenarioArg?: "happy" | "failure" | "custom",
+  customRfqArg?: Partial<RfqPayload>,
+  allowRenegotiationArg?: boolean
 ): Promise<NegotiationResult> {
-  const policy: PolicyConfig = defaultBuyerPolicy;
+  let params: RunNegotiationParams = {};
+  if (typeof paramsOrThreadId === "string") {
+    params = {
+      threadId: paramsOrThreadId,
+      scenario: scenarioArg,
+      customRfq: customRfqArg,
+      allowRenegotiation: allowRenegotiationArg,
+    };
+  } else if (paramsOrThreadId) {
+    params = paramsOrThreadId;
+  }
+
+  const threadId =
+    params.threadId || `thread_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 6)}`;
+  const scenario = params.scenario || "custom";
+  const allowRenegotiation = params.allowRenegotiation !== false;
+  const policy: PolicyConfig = {
+    ...getPolicyConfig(BUYER_ID),
+    ...(params.delegationMode ? { delegation_mode: params.delegationMode } : {}),
+  };
+
+  let item = params.itemToProcure || params.customRfq?.item || "flour";
+  let deficitQuantity = params.quantityNeeded || 5;
+
+  let matchingSellers: AgentCard[];
+
+  if (scenario === "happy") {
+    item = "tomato";
+    deficitQuantity = 50;
+    matchingSellers = [
+      {
+        agent_id: "agent:seller:veggie_vendor_09",
+        name: "Veggie Vendor 09",
+        stocked_items: ["tomato"],
+        catalog: { tomato: { base_price: 32, stock: 500 } },
+        negotiable: true,
+        description: "Wholesale produce vendor",
+      },
+    ];
+  } else if (scenario === "failure") {
+    item = "tomato";
+    deficitQuantity = 75;
+    matchingSellers = [
+      {
+        agent_id: "agent:seller:veggie_vendor_09",
+        name: "Veggie Vendor 09",
+        stocked_items: ["tomato"],
+        catalog: { tomato: { base_price: 32, stock: 500 } },
+        negotiable: true,
+        description: "Wholesale produce vendor",
+      },
+    ];
+  } else {
+    if (!params.quantityNeeded && params.buyerTargetStockKg !== undefined) {
+      const currentStock = params.buyerStockKg !== undefined ? params.buyerStockKg : 5;
+      deficitQuantity = Math.max(1, params.buyerTargetStockKg - currentStock);
+    }
+    const agentCards = InventoryStore.getAgentCards();
+    matchingSellers = agentCards.filter((card) =>
+      card.stocked_items.some(
+        (si) => si.toLowerCase().includes(item.toLowerCase()) || item.toLowerCase().includes(si.toLowerCase())
+      )
+    );
+    if (matchingSellers.length === 0) {
+      matchingSellers = [
+        {
+          agent_id: "agent:seller:veggie_vendor_09",
+          name: "Veggie Vendor 09",
+          stocked_items: [item],
+          catalog: { [item]: { base_price: 32, stock: 500 } },
+          negotiable: true,
+          description: "Wholesale produce vendor",
+        },
+      ];
+    }
+  }
+
   const restaurantProfile: RestaurantProfile = {
     restaurant_id: BUYER_ID,
     weekly_budget_cap: policy.weekly_budget_cap,
@@ -128,60 +232,139 @@ export async function runNegotiation(
     max_price_per_kg: policy.per_unit_price_ceiling,
   };
 
-  // 1. Initial RFQ
-  const initialRfq = buildRfq(scenario, customRfq);
-  logEnvelope(threadId, "RFQ", BUYER_ID, SELLER_ID, {
-    ...initialRfq,
-    narrative: `Buyer agent requests quote for ${initialRfq.quantity_kg}kg ${initialRfq.item} (Quality: ${initialRfq.quality_min}).`,
-  });
+  const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+  const rfqBase: RfqPayload = {
+    item,
+    quantity_kg: deficitQuantity,
+    quality_min: "Grade A",
+    needed_by: tomorrow,
+    buyer_max_price_per_kg: policy.per_unit_price_ceiling[item] || 35,
+    ...params.customRfq,
+  };
 
-  // 2. Seller Agent computes inventory & discount, then responds with Offer
-  const offer = await sellerRespondToRfq(initialRfq);
-  logEnvelope(threadId, "OFFER", SELLER_ID, BUYER_ID, {
-    ...offer,
-    narrative: `Seller offers ${offer.quantity_kg}kg at ₹${offer.final_price_per_kg}/kg (total ₹${offer.total_price}) with ${offer.discount_pct}% ${offer.discount_reason} discount.`,
-  });
-
-  // 3. Buyer Agent evaluates offer
-  const buyerDecision = await buyerEvaluateOffer(offer, restaurantProfile);
-
-  if (buyerDecision.action === "reject") {
-    logEnvelope(threadId, "REJECT", BUYER_ID, SELLER_ID, {
-      reason: buyerDecision.reason || "Offer rejected by buyer criteria.",
+  for (const seller of matchingSellers) {
+    logEnvelope(threadId, "RFQ", BUYER_ID, seller.agent_id, {
+      ...rfqBase,
+      target_seller_id: seller.agent_id,
+      seller_name: seller.name,
+      narrative: `RazorSlice requested wholesale quote for ${rfqBase.quantity_kg} units of ${rfqBase.item} from ${seller.name}.`,
     });
-    return {
-      thread_id: threadId,
-      scenario,
-      status: "REJECTED",
-      final_message_type: "REJECT",
-    };
   }
 
-  // Buyer proposes accept (Awaiting Policy Engine Authorization)
-  logEnvelope(threadId, "ACCEPT", BUYER_ID, POLICY_ENGINE_ID, {
-    proposal: "propose_accept",
-    rationale: buyerDecision.rationale || `Proposed acceptance for ${offer.quantity_kg}kg at ₹${offer.total_price}.`,
-    target_offer: offer,
-  });
+  const sellerOfferPromises = matchingSellers.map((seller) =>
+    sellerRespondToRfq(rfqBase, seller.agent_id)
+  );
+  const sellerOffers = await Promise.all(sellerOfferPromises);
 
-  // 4. Policy Engine Evaluates Deal (Pure & Deterministic)
+  for (const offer of sellerOffers) {
+    logEnvelope(threadId, "OFFER", offer.seller_id || "agent:seller", BUYER_ID, {
+      ...offer,
+      narrative: `Wholesale quote: ${offer.quantity_kg} units at ₹${offer.final_price_per_kg}/unit (Total ₹${offer.total_price}) with ${offer.discount_pct}% discount.`,
+    });
+  }
+
+  const buyerDecision: BuyerDecision = await buyerEvaluateOffer(
+    sellerOffers[0],
+    restaurantProfile,
+    sellerOffers
+  );
+
+  if (buyerDecision.declined_upsell_reason) {
+    logEnvelope(threadId, "UPSELL_DECLINE", BUYER_ID, "system", {
+      reason: buyerDecision.declined_upsell_reason,
+      narrative: buyerDecision.declined_upsell_reason,
+    });
+  }
+  if (buyerDecision.accepted_upsell) {
+    logEnvelope(threadId, "UPSELL_ACCEPT", BUYER_ID, "system", {
+      upsell_item: buyerDecision.accepted_upsell,
+      narrative: `Accepted valuable upsell bundle of ${buyerDecision.accepted_upsell.quantity_kg} units ${buyerDecision.accepted_upsell.item} at ₹${buyerDecision.accepted_upsell.unit_price}/unit.`,
+    });
+  }
+
+  let chosenOffer: OfferPayload;
+  let totalDealAmount = 0;
+  let winningSellerId = sellerOffers[0].seller_id || "agent:seller:razor_pies";
+
+  if (buyerDecision.action === "propose_split_accept" && buyerDecision.split_payload) {
+    const split = buyerDecision.split_payload;
+    totalDealAmount = split.total_cost;
+    chosenOffer = {
+      item: split.item,
+      quantity_kg: split.total_quantity_kg,
+      quality: "Grade A",
+      base_price_per_kg: Number((split.total_cost / split.total_quantity_kg).toFixed(2)),
+      discount_pct: 10,
+      discount_reason: "multi_seller_split_optimization",
+      final_price_per_kg: Number((split.total_cost / split.total_quantity_kg).toFixed(2)),
+      total_price: split.total_cost,
+      delivery_by: tomorrow,
+      offer_expires: new Date(Date.now() + 6 * 3600 * 1000).toISOString(),
+      seller_id: split.splits.map((s) => s.seller_id).join(" + "),
+      rationale: split.rationale,
+    };
+
+    logEnvelope(threadId, "SPLIT_ACCEPT", BUYER_ID, POLICY_ENGINE_ID, {
+      proposal: "propose_split_accept",
+      split_deal: split,
+      total_cost: split.total_cost,
+      rationale: split.rationale,
+    });
+  } else {
+    chosenOffer = buyerDecision.target_offer || sellerOffers[0];
+    totalDealAmount = chosenOffer.total_price;
+    winningSellerId = chosenOffer.seller_id || "agent:seller:razor_pies";
+
+    logEnvelope(threadId, "ACCEPT", BUYER_ID, POLICY_ENGINE_ID, {
+      proposal: "propose_accept",
+      target_offer: chosenOffer,
+      rationale:
+        buyerDecision.rationale ||
+        `Proposed acceptance for ${chosenOffer.quantity_kg} units from ${winningSellerId} at ₹${chosenOffer.total_price}.`,
+    });
+  }
+
   const weekSpentSoFar = getWeekSpent(BUYER_ID);
-  const policyResult = evaluateDeal(offer, SELLER_ID, policy, weekSpentSoFar);
+  const policyResult = evaluateDeal(chosenOffer, winningSellerId, policy, weekSpentSoFar);
 
   logEnvelope(threadId, "POLICY_CHECK", POLICY_ENGINE_ID, BUYER_ID, {
     approved: policyResult.approved,
     action: policyResult.action,
     checks: policyResult.checks,
     summary: policyResult.approved
-      ? "Policy Engine APPROVED: Deal conforms to all allowlist, unit price, and spending caps."
-      : "Policy Engine REJECTED: Deal breaches one or more budget caps.",
+      ? `Policy Engine APPROVED: Deal for ₹${totalDealAmount} passed all spend caps, unit ceilings, and allowlists.`
+      : `Policy Engine REJECTED: Proposed deal of ₹${totalDealAmount} breached policy bounds.`,
   });
 
-  // 5. Execution branch
   if (policyResult.approved) {
-    // Happy path: create test-mode Razorpay order
-    const amountInPaise = Math.round(offer.total_price * 100);
-    const receipt = `rcpt_${threadId}_${Date.now()}`;
+    if (policy.delegation_mode === "partial") {
+      return {
+        thread_id: threadId,
+        scenario,
+        status: "AWAITING_CONFIRMATION",
+        final_message_type: "ACCEPT",
+        pending_offer: chosenOffer,
+        policy_checks: policyResult.checks,
+        total_amount: totalDealAmount,
+      };
+    }
+
+    if (params.simulatePaymentFail) {
+      logEnvelope(threadId, "ORDER_FAIL", RAZORPAY_SYSTEM_ID, BUYER_ID, {
+        reason: "GATEWAY_ERROR",
+        message: "Payment simulation trigger: Gateway rejected test transaction.",
+      });
+      return {
+        thread_id: threadId,
+        scenario,
+        status: "PAYMENT_FAILED",
+        final_message_type: "ORDER_FAIL",
+        message: "Simulated payment failure",
+      };
+    }
+
+    const amountInPaise = Math.round(totalDealAmount * 100);
+    const receipt = `rcpt_${threadId}_${Date.now().toString(36)}`;
     const order = await razorpayClient.createOrder(amountInPaise, "INR", receipt);
 
     logEnvelope(threadId, "ORDER_CREATE", BUYER_ID, RAZORPAY_SYSTEM_ID, {
@@ -189,17 +372,17 @@ export async function runNegotiation(
       amount: order.amount,
       currency: order.currency,
       receipt: order.receipt,
-      total_price: offer.total_price,
+      total_price: totalDealAmount,
       is_mock: order.is_mock,
     });
 
     logEnvelope(threadId, "ORDER_CONFIRM", RAZORPAY_SYSTEM_ID, BUYER_ID, {
       status: order.status,
       orderId: order.id,
-      amount_inr: offer.total_price,
-      item: offer.item,
-      quantity_kg: offer.quantity_kg,
-      message: `Razorpay test-mode order ${order.id} confirmed for ₹${offer.total_price}.`,
+      amount_inr: totalDealAmount,
+      item: chosenOffer.item,
+      quantity_kg: chosenOffer.quantity_kg,
+      message: `Razorpay test-mode order ${order.id} confirmed for ₹${totalDealAmount}.`,
     });
 
     return {
@@ -208,60 +391,58 @@ export async function runNegotiation(
       status: "CONFIRMED",
       final_message_type: "ORDER_CONFIRM",
       order_id: order.id,
-      total_amount: offer.total_price,
+      total_amount: totalDealAmount,
       policy_checks: policyResult.checks,
+      buyer_stock: (params.buyerStockKg || 5) + deficitQuantity,
     };
   } else {
-    // Failure path: check if bounded renegotiation can resolve the breach
     const failedRules = policyResult.checks.filter((c) => !c.passed).map((c) => c.rule);
-    const canRenegotiate = allowRenegotiation && offer.quantity_kg > MIN_VIABLE_QUANTITY;
+    const canRenegotiate = allowRenegotiation && chosenOffer.quantity_kg > MIN_VIABLE_QUANTITY;
 
     if (canRenegotiate && failedRules.includes("within_per_transaction_cap")) {
-      // Auto-renegotiate quantity down to 50kg so deal value ₹1,440 fits within ₹1,600 cap
-      const targetQty = 50;
-
-      logEnvelope(threadId, "COUNTER_OFFER", BUYER_ID, SELLER_ID, {
-        item: offer.item,
-        quantity_kg: targetQty,
-        reason: `Initial offer of ₹${offer.total_price} breached per-transaction cap (₹${policy.per_transaction_cap}). Countering with ${targetQty}kg to stay within policy bounds.`,
-        failed_policy_rules: failedRules,
+      const reducedQty = scenario === "failure" ? 50 : Math.max(1, Math.floor(chosenOffer.quantity_kg * 0.6));
+      logEnvelope(threadId, "COUNTER_OFFER", BUYER_ID, winningSellerId, {
+        item: chosenOffer.item,
+        quantity_kg: reducedQty,
+        reason: `Initial quote of ₹${chosenOffer.total_price} breached per-transaction cap (₹${policy.per_transaction_cap}). Auto-renegotiating with reduced quantity (${reducedQty} units) to fit budget bounds.`,
+        failed_rules: failedRules,
       });
 
-      // Seller responds to revised counter
-      const counterOffer = await sellerRespondToRfq({
-        item: offer.item,
-        quantity_kg: targetQty,
-        quality_min: "Grade A",
-        needed_by: initialRfq.needed_by,
-        buyer_max_price_per_kg: 35,
-      });
+      const counterOffer = await sellerRespondToRfq(
+        {
+          item: chosenOffer.item,
+          quantity_kg: reducedQty,
+          quality_min: "Grade A",
+          needed_by: tomorrow,
+          buyer_max_price_per_kg: policy.per_unit_price_ceiling[chosenOffer.item] || 35,
+        },
+        winningSellerId
+      );
 
-      logEnvelope(threadId, "OFFER", SELLER_ID, BUYER_ID, {
+      logEnvelope(threadId, "OFFER", winningSellerId, BUYER_ID, {
         ...counterOffer,
-        narrative: `Seller revised offer for ${counterOffer.quantity_kg}kg at ₹${counterOffer.final_price_per_kg}/kg (total ₹${counterOffer.total_price}).`,
+        narrative: `Revised quote: ${counterOffer.quantity_kg} units at ₹${counterOffer.final_price_per_kg}/unit (Total ₹${counterOffer.total_price}).`,
       });
 
-      // Buyer proposes acceptance of revised offer
       logEnvelope(threadId, "ACCEPT", BUYER_ID, POLICY_ENGINE_ID, {
         proposal: "propose_accept",
-        rationale: `Revised offer of ${counterOffer.quantity_kg}kg at ₹${counterOffer.total_price} satisfies transaction cap. Proposing acceptance.`,
         target_offer: counterOffer,
+        rationale: `Accepted renegotiated offer for ${counterOffer.quantity_kg} units at ₹${counterOffer.total_price}.`,
       });
 
-      // Policy Engine re-evaluates revised offer
-      const secondPolicyResult = evaluateDeal(counterOffer, SELLER_ID, policy, weekSpentSoFar);
+      const rePolicyResult = evaluateDeal(counterOffer, winningSellerId, policy, weekSpentSoFar);
       logEnvelope(threadId, "POLICY_CHECK", POLICY_ENGINE_ID, BUYER_ID, {
-        approved: secondPolicyResult.approved,
-        action: secondPolicyResult.action,
-        checks: secondPolicyResult.checks,
-        summary: secondPolicyResult.approved
-          ? "Policy Engine APPROVED revised offer: Now within all policy limits."
+        approved: rePolicyResult.approved,
+        action: rePolicyResult.action,
+        checks: rePolicyResult.checks,
+        summary: rePolicyResult.approved
+          ? "Policy Engine APPROVED renegotiated offer: Now within all policy limits."
           : "Policy Engine REJECTED revised offer.",
       });
 
-      if (secondPolicyResult.approved) {
+      if (rePolicyResult.approved) {
         const amountInPaise = Math.round(counterOffer.total_price * 100);
-        const receipt = `rcpt_${threadId}_renegotiated_${Date.now()}`;
+        const receipt = `rcpt_${threadId}_reneg_${Date.now().toString(36)}`;
         const order = await razorpayClient.createOrder(amountInPaise, "INR", receipt);
 
         logEnvelope(threadId, "ORDER_CREATE", BUYER_ID, RAZORPAY_SYSTEM_ID, {
@@ -270,7 +451,6 @@ export async function runNegotiation(
           currency: order.currency,
           receipt: order.receipt,
           total_price: counterOffer.total_price,
-          is_mock: order.is_mock,
         });
 
         logEnvelope(threadId, "ORDER_CONFIRM", RAZORPAY_SYSTEM_ID, BUYER_ID, {
@@ -279,7 +459,7 @@ export async function runNegotiation(
           amount_inr: counterOffer.total_price,
           item: counterOffer.item,
           quantity_kg: counterOffer.quantity_kg,
-          message: `Negotiation succeeded: Razorpay test-mode order ${order.id} confirmed for ₹${counterOffer.total_price} after bounded renegotiation.`,
+          message: `Negotiation succeeded: Razorpay order ${order.id} confirmed for ₹${counterOffer.total_price} after bounded renegotiation.`,
         });
 
         return {
@@ -289,19 +469,19 @@ export async function runNegotiation(
           final_message_type: "ORDER_CONFIRM",
           order_id: order.id,
           total_amount: counterOffer.total_price,
-          policy_checks: secondPolicyResult.checks,
+          policy_checks: rePolicyResult.checks,
+          buyer_stock: (params.buyerStockKg || 5) + reducedQty,
         };
       }
     }
 
-    // Escalate to human: zero money moves, clear audit record of policy failure
-    logEnvelope(threadId, "ORDER_FAIL", BUYER_ID, "system:human_escalation", {
+    logEnvelope(threadId, "ORDER_FAIL", BUYER_ID, HUMAN_MANAGER_ID, {
       reason: "policy_violation",
       violation: failedRules,
       requires_human_approval: true,
-      offer_total: offer.total_price,
+      offer_total: chosenOffer.total_price,
       transaction_cap: policy.per_transaction_cap,
-      message: `Deal blocked: Proposed purchase of ₹${offer.total_price} exceeds policy cap. Escalated to human manager.`,
+      message: `Deal blocked: Proposed purchase of ₹${chosenOffer.total_price} violates policy bounds. Zero funds transferred. Escalated to human manager.`,
     });
 
     return {
@@ -310,13 +490,76 @@ export async function runNegotiation(
       status: "ESCALATED_POLICY_VIOLATION",
       final_message_type: "ORDER_FAIL",
       policy_checks: policyResult.checks,
+      message: "Deal blocked by policy engine",
     };
   }
 }
 
+export async function confirmPendingTransaction(params: {
+  threadId: string;
+  offer: Partial<OfferPayload>;
+  action?: "approve" | "decline";
+  simulatePaymentFail?: boolean;
+}): Promise<{
+  success: boolean;
+  status: string;
+  order_id?: string;
+  total_amount?: number;
+  buyer_stock?: number;
+  seller_stock?: number;
+}> {
+  const { threadId, offer, action = "approve", simulatePaymentFail = false } = params;
+
+  if (action === "decline") {
+    logEnvelope(threadId, "ORDER_FAIL", "human:manager", BUYER_ID, {
+      reason: "HUMAN_DECLINED",
+      message: "Transaction declined by restaurant manager in Partial Autonomous Mode.",
+    });
+    return { success: true, status: "DECLINED" };
+  }
+
+  if (simulatePaymentFail) {
+    logEnvelope(threadId, "ORDER_FAIL", RAZORPAY_SYSTEM_ID, BUYER_ID, {
+      reason: "PAYMENT_GATEWAY_ERROR",
+      message: "Simulated payment processing error at gateway.",
+    });
+    return { success: false, status: "PAYMENT_FAILED" };
+  }
+
+  const totalPrice = offer.total_price || 1440;
+  const amountInPaise = Math.round(totalPrice * 100);
+  const receipt = `rcpt_${threadId}_human_${Date.now().toString(36)}`;
+  const order = await razorpayClient.createOrder(amountInPaise, "INR", receipt);
+
+  logEnvelope(threadId, "ORDER_CREATE", BUYER_ID, RAZORPAY_SYSTEM_ID, {
+    orderId: order.id,
+    amount: order.amount,
+    currency: order.currency,
+    receipt: order.receipt,
+    total_price: totalPrice,
+  });
+
+  logEnvelope(threadId, "ORDER_CONFIRM", RAZORPAY_SYSTEM_ID, BUYER_ID, {
+    status: order.status,
+    orderId: order.id,
+    amount_inr: totalPrice,
+    item: offer.item || "flour",
+    quantity_kg: offer.quantity_kg || 50,
+    message: `Human-authorized Razorpay order ${order.id} confirmed for ₹${totalPrice}.`,
+  });
+
+  return {
+    success: true,
+    status: "CONFIRMED",
+    order_id: order.id,
+    total_amount: totalPrice,
+    buyer_stock: (offer.quantity_kg || 50) + 15,
+  };
+}
+
 export class Orchestrator {
   static runNegotiation = runNegotiation;
-  static buildRfq = buildRfq;
+  static confirmPendingTransaction = confirmPendingTransaction;
 }
 
 export default Orchestrator;
