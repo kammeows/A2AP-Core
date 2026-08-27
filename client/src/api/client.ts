@@ -1,4 +1,4 @@
-import { Envelope, InventoryItem, BuyerInventory, PolicyConfig, NegotiationResult, OfferPayload } from '../types';
+import { Envelope, InventoryItem, BuyerInventory, PolicyConfig, NegotiationResult, OfferPayload, PurchasedItem } from '../types';
 
 const API_BASE = '/api';
 
@@ -65,6 +65,7 @@ export async function triggerNegotiation(params: {
   simulatePaymentFail?: boolean;
   itemToProcure?: string;
   quantityNeeded?: number;
+  itemsToProcure?: Array<{ item: string; quantity: number }>;
   customRfq?: any;
 }): Promise<NegotiationResult> {
   const res = await fetch(`${API_BASE}/negotiate`, {
@@ -89,6 +90,7 @@ export async function confirmTransaction(params: {
   message?: string;
   buyer_stock?: number;
   seller_stock?: number;
+  purchased_items?: PurchasedItem[];
 }> {
   const res = await fetch(`${API_BASE}/negotiate/confirm`, {
     method: 'POST',

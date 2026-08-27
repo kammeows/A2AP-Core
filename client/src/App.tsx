@@ -85,7 +85,7 @@ export const App: React.FC = () => {
   const handleRunAi = async (
     scenario: 'happy' | 'failure' | 'custom' = 'custom',
     customOptions?: any
-  ) => {
+  ): Promise<NegotiationResult | null> => {
     setIsRunning(true);
     setPendingOffer(null);
     setLatestResult(null);
@@ -100,6 +100,7 @@ export const App: React.FC = () => {
         simulatePaymentFail,
         itemToProcure: customOptions?.itemToProcure,
         quantityNeeded: customOptions?.quantityNeeded,
+        itemsToProcure: customOptions?.itemsToProcure,
         customRfq: customOptions?.customRfq,
       });
 
@@ -130,16 +131,20 @@ export const App: React.FC = () => {
       if (typeof polData?.week_spent_so_far === 'number') {
         setWeekSpentSoFar(polData.week_spent_so_far);
       }
+
+      return result;
     } catch (err: any) {
       console.error('Error executing AI procurement:', err);
-      setLatestResult({
+      const failRes: NegotiationResult = {
         success: false,
         thread_id: '',
         scenario,
         status: 'PAYMENT_FAILED',
         final_message_type: 'ORDER_FAIL',
         message: err.message || 'Execution failed',
-      });
+      };
+      setLatestResult(failRes);
+      return failRes;
     } finally {
       setIsRunning(false);
     }

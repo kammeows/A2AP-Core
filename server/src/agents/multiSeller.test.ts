@@ -140,7 +140,6 @@ describe("Multi-Seller Agent Network & Split-Order Optimization", () => {
     assert.ok(result.total_amount && result.total_amount > 0);
 
     const thread = ThreadStore.getThread(threadId);
-    // Should have RFQs to both RazorPies and Razorcery-1 (since both sell flour)
     const rfqMsgs = thread.filter((m) => m.type === "RFQ");
     assert.ok(rfqMsgs.length >= 2);
 
@@ -153,5 +152,28 @@ describe("Multi-Seller Agent Network & Split-Order Optimization", () => {
 
     const orderConfirmMsg = thread.find((m) => m.type === "ORDER_CONFIRM");
     assert.ok(orderConfirmMsg);
+  });
+
+  test("6. Multi-Item Concurrent Procurement procures multiple missing ingredients in a single A2A cycle", async () => {
+    const threadId = "test_multi_item_" + Date.now();
+    const result = await runNegotiation({
+      threadId,
+      scenario: "custom",
+      itemsToProcure: [
+        { item: "flour", quantity: 4 },
+        { item: "cheese", quantity: 3 },
+      ],
+    });
+
+    assert.equal(result.status, "CONFIRMED");
+    assert.ok(result.purchased_items && result.purchased_items.length >= 2);
+    assert.ok(result.total_amount && result.total_amount > 0);
+
+    const thread = ThreadStore.getThread(threadId);
+    const flourRfqs = thread.filter((m) => m.type === "RFQ" && m.payload.item === "flour");
+    const cheeseRfqs = thread.filter((m) => m.type === "RFQ" && m.payload.item === "cheese");
+
+    assert.ok(flourRfqs.length > 0);
+    assert.ok(cheeseRfqs.length > 0);
   });
 });
