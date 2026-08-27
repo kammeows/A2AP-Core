@@ -239,6 +239,20 @@ export const MobileDevice: React.FC<MobileDeviceProps> = ({
                 <span style={{ color: '#15803d', fontWeight: 700 }}>Policy Passed ✓</span>
               </div>
 
+              {pendingOffer.rationale && (
+                <div style={{
+                  fontSize: '0.7rem',
+                  color: '#92400e',
+                  marginBottom: '0.65rem',
+                  padding: '0.35rem 0.5rem',
+                  background: 'rgba(254, 243, 199, 0.7)',
+                  borderRadius: 4,
+                  lineHeight: 1.3
+                }}>
+                  <strong>Seller:</strong> {pendingOffer.rationale}
+                </div>
+              )}
+
               <div style={{ display: 'flex', gap: '0.45rem' }}>
                 <button
                   onClick={() => onConfirmTransaction('approve')}

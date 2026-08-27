@@ -194,22 +194,6 @@ export const EnvelopeTrace: React.FC<EnvelopeTraceProps> = ({
               >
                 Full Explainability Envelope Trace
               </h2>
-              {threadId && (
-                <span
-                  style={{
-                    fontSize: "0.68rem",
-                    fontFamily: "var(--font-mono)",
-                    padding: "0.15rem 0.45rem",
-                    borderRadius: 4,
-                    background: "#f1f5f9",
-                    color: "#012652",
-                    border: "1px solid #e2e8f0",
-                    fontWeight: 600,
-                  }}
-                >
-                  {threadId}
-                </span>
-              )}
             </div>
             <p style={{ fontSize: "0.76rem", color: "#475569", marginTop: 1 }}>
               Structured message logs with decision explainability
@@ -508,6 +492,23 @@ export const EnvelopeTrace: React.FC<EnvelopeTraceProps> = ({
                         {envelope.payload.narrative ||
                           `Wholesale offer: ${envelope.payload.quantity_kg}kg at ₹${envelope.payload.final_price_per_kg}/kg.`}
                       </p>
+
+                      {envelope.payload.rationale && (
+                        <div style={{
+                          marginTop: '0.4rem',
+                          padding: '0.45rem 0.65rem',
+                          background: '#f0f9ff',
+                          border: '1px solid #bae6fd',
+                          borderRadius: 6,
+                          fontSize: '0.76rem',
+                          color: '#0369a1',
+                          lineHeight: 1.4
+                        }}>
+                          <strong style={{ color: '#012652' }}>Seller Pricing Rationale: </strong>
+                          {envelope.payload.rationale}
+                        </div>
+                      )}
+
                       <div
                         style={{
                           display: "grid",

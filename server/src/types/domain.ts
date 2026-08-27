@@ -19,6 +19,7 @@ export interface OfferPayload {
   total_price: number;
   delivery_by: string;
   offer_expires: string;
+  rationale?: string;
 }
 
 export interface InventoryItem {
