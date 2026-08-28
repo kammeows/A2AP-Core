@@ -18,8 +18,11 @@ import {
   CreditCard,
   Utensils,
   Layers,
+  ArrowLeftRight,
+  ExternalLink,
+  Award,
 } from "lucide-react";
-import { NegotiationResult } from "../types";
+import { Envelope, NegotiationResult } from "../types";
 
 export interface RazorSliceArchitectureProps {
   onRunAi: (
@@ -29,6 +32,8 @@ export interface RazorSliceArchitectureProps {
   isRunning: boolean;
   delegationMode: "full" | "partial";
   latestResult: NegotiationResult | null;
+  messages?: Envelope[];
+  onSelectMessage?: (messageId: string) => void;
 }
 
 export interface BuyerPantry {
@@ -114,6 +119,8 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
   isRunning,
   delegationMode,
   latestResult,
+  messages = [],
+  onSelectMessage,
 }) => {
   // 1. RazorSlice Buyer Stock State (simulation-2.md: flour par=30, others par=5)
   const [buyerStock, setBuyerStock] = useState<BuyerPantry>({
@@ -341,7 +348,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
     }
   }, [latestResult]);
 
-  // 1. Total Session / Menu Requirements
+  // Total Session / Menu Requirements
   const allSessionOrders = [...completedOrders, ...orderQueue];
   const totalMenuRequirements = {
     flour: Math.max(15, allSessionOrders.reduce((sum, o) => sum + (o.recipe.flour || 0), 0)),
@@ -351,20 +358,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
     milk: Math.max(4, allSessionOrders.reduce((sum, o) => sum + (o.recipe.milk || 0), 0)),
   };
 
-  // 2. Active Remaining Queue Demand
-  const remainingQueueDemand = orderQueue.reduce(
-    (acc, ord) => {
-      acc.flour += ord.recipe.flour || 0;
-      acc.cheese += ord.recipe.cheese || 0;
-      acc.tomatoes += ord.recipe.tomatoes || 0;
-      acc.onions += ord.recipe.onions || 0;
-      acc.milk += ord.recipe.milk || 0;
-      return acc;
-    },
-    { flour: 0, cheese: 0, tomatoes: 0, onions: 0, milk: 0 }
-  );
-
-  // Proactive Par Stock & Buffer Calculation (simulation-2.md requirement 2)
+  // Proactive Par Stock & Buffer Calculation
   const computeProactiveReplenishment = (currentPantry: BuyerPantry) => {
     const itemsToBuy: Array<{ item: string; quantity: number }> = [];
     const keys: Array<keyof Omit<BuyerPantry, "targetStock">> = [
@@ -385,11 +379,10 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
 
     if (!hasBelowPar) return [];
 
-    // When any item drops below par, evaluate all items and include items below or near par
     for (const k of keys) {
       const par = PAR_STOCK_LEVELS[k];
       const current = currentPantry[k];
-      const buffer = k === "flour" ? 10 : 5; // +10 buffer for flour, +5 buffer for other items
+      const buffer = k === "flour" ? 10 : 5;
 
       if (current < par || current <= par + 1) {
         const deficitToPar = Math.max(0, par - current);
@@ -406,7 +399,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
     return itemsToBuy;
   };
 
-  // Deterministic Kitchen Order Agent: processes next customer order (simulation-2.md requirement 2)
+  // Process next order in queue
   const processNextOrder = async (): Promise<boolean> => {
     if (orderQueue.length === 0) {
       addLog("info", "Queue Complete", "All customer orders have been successfully fulfilled & served!");
@@ -426,7 +419,6 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
       currentOrder.id
     );
 
-    // Step 1: Check if pantry can bake this order immediately
     let canBakeImmediately = true;
     const immediateDeficits: Array<{ item: string; quantity: number }> = [];
 
@@ -441,7 +433,6 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
     });
 
     if (canBakeImmediately) {
-      // 1. Stock available: bake pizza & decrement stock
       await new Promise((r) => setTimeout(r, 550));
 
       const updatedStock = { ...buyerStock };
@@ -452,7 +443,6 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
       });
       setBuyerStock(updatedStock);
 
-      // Lightweight INVENTORY_EVENT log
       addLog(
         "inventory_event",
         `[INVENTORY_EVENT] Baked ${currentOrder.name} (-${Object.entries(currentOrder.recipe)
@@ -462,7 +452,6 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
         currentOrder.id
       );
 
-      // Mark served and shift queue
       const servedOrder = { ...currentOrder, status: "served" as const };
       setOrderQueue((prev) => prev.slice(1));
       setCompletedOrders((prev) => [servedOrder, ...prev]);
@@ -474,7 +463,6 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
         currentOrder.id
       );
 
-      // Step 2: Par Stock Monitor -> Triggers Buyer Agent if stock dropped below par
       const proactiveReplenishment = computeProactiveReplenishment(updatedStock);
       if (proactiveReplenishment.length > 0) {
         addLog(
@@ -502,7 +490,6 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
       setActiveProcessingOrder(null);
       return true;
     } else {
-      // Stock shortage prevents baking: Trigger immediate replenishment with safe buffer
       addLog(
         "par_trigger",
         `⚠️ Immediate Stock Shortage on Order #${currentOrder.id}`,
@@ -537,7 +524,6 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
       if (res && res.status === "CONFIRMED") {
         await new Promise((r) => setTimeout(r, 650));
 
-        // Decrement stock for the order after restocked
         setBuyerStock((prev) => {
           const next = { ...prev };
           (Object.keys(currentOrder.recipe) as Array<keyof BuyerPantry>).forEach((k) => {
@@ -574,7 +560,6 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
     }
   };
 
-  // Continuous Auto-Simulation loop
   useEffect(() => {
     let timeoutId: NodeJS.Timeout;
     if (isAutoSimulating && !isRunning && orderQueue.length > 0) {
@@ -587,7 +572,6 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
     return () => clearTimeout(timeoutId);
   }, [isAutoSimulating, isRunning, orderQueue]);
 
-  // Preset Handlers (simulation-2.md par stock compliant)
   const applyPreset = (preset: "default" | "stocked" | "low_par" | "over_cap") => {
     if (preset === "default") {
       setBuyerStock({ cheese: 5, flour: 30, tomatoes: 6, onions: 5, milk: 7, targetStock: 30 });
@@ -622,7 +606,6 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
     }
   };
 
-  // Add extra order to queue
   const handleAddOrder = (recipeType: "margherita" | "farm_fresh" | "shake") => {
     const id = nextOrderIdRef.current++;
     let newOrd: CustomerOrder;
@@ -637,7 +620,6 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
     addLog("order_taken", `New Customer Arrived: Order #${id}`, `Added ${newOrd.name} to the back of the queue.`, id);
   };
 
-  // Steppers for buyer stock
   const updateBuyerItem = (item: keyof BuyerPantry, delta: number) => {
     if (isRunning) return;
     setBuyerStock((prev) => ({
@@ -646,7 +628,6 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
     }));
   };
 
-  // Stepper for seller item stock
   const updateSellerStock = (
     seller: "razorPies" | "razorcery1" | "razorcery2",
     item: string,
@@ -671,6 +652,205 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
     }
   };
 
+  // Helper to filter envelopes specific to a seller channel
+  const getChannelMessages = (sellerId: string) => {
+    return messages.filter(
+      (m) =>
+        m.from.toLowerCase().includes(sellerId.toLowerCase()) ||
+        m.to.toLowerCase().includes(sellerId.toLowerCase())
+    );
+  };
+
+  // Helper to check if a specific seller won a deal in the latest result
+  const isSellerFinalized = (sellerId: string) => {
+    if (!latestResult || latestResult.status !== "CONFIRMED") return false;
+    if (latestResult.purchased_items && latestResult.purchased_items.length > 0) {
+      return latestResult.purchased_items.some((p) =>
+        p.seller_id.toLowerCase().includes(sellerId.toLowerCase())
+      );
+    }
+    if (latestResult.pending_offer?.seller_id) {
+      return latestResult.pending_offer.seller_id.toLowerCase().includes(sellerId.toLowerCase());
+    }
+    return false;
+  };
+
+  const getSellerFinalizedSummary = (sellerId: string) => {
+    if (!latestResult || latestResult.status !== "CONFIRMED") return null;
+    const items = (latestResult.purchased_items || []).filter((p) =>
+      p.seller_id.toLowerCase().includes(sellerId.toLowerCase())
+    );
+    if (items.length === 0) return null;
+    const totalCost = items.reduce((sum, it) => sum + it.quantity * it.price, 0);
+    return {
+      itemsSummary: items.map((it) => `${it.quantity}u ${it.item} @ ₹${it.price}`).join(", "),
+      totalCost,
+    };
+  };
+
+  // Helper component for message queue capsule channel box (matching image.png blueprint)
+  // ONLY shows messages when messages exist, with no filler text and a smooth internal scrollbar!
+  const renderMessageChannel = (
+    sellerKey: string,
+    sellerDisplayName: string
+  ) => {
+    const channelMsgs = getChannelMessages(sellerKey);
+    const finalized = isSellerFinalized(sellerKey);
+    const finalizedSummary = getSellerFinalizedSummary(sellerKey);
+
+    return (
+      <div
+        style={{
+          border: finalized ? "1.5px solid #10b981" : "1.5px solid #0D94FB",
+          borderRadius: 14,
+          padding: "0.4rem 0.65rem",
+          background: finalized
+            ? "linear-gradient(90deg, rgba(16, 185, 129, 0.08) 0%, rgba(13, 148, 251, 0.08) 100%)"
+            : "rgba(13, 148, 251, 0.05)",
+          boxShadow: finalized
+            ? "0 0 14px rgba(16, 185, 129, 0.25)"
+            : "0 0 10px rgba(13, 148, 251, 0.12)",
+          display: "flex",
+          alignItems: "center",
+          gap: "0.5rem",
+          minHeight: 48,
+          position: "relative",
+          width: "100%",
+          minWidth: 0,
+          boxSizing: "border-box",
+        }}
+      >
+        {/* Channel Label Tag */}
+        <div
+          style={{
+            fontSize: "0.62rem",
+            fontWeight: 800,
+            color: finalized ? "#34d399" : "#38bdf8",
+            display: "flex",
+            alignItems: "center",
+            gap: "0.25rem",
+            flexShrink: 0,
+            background: "rgba(15, 23, 42, 0.7)",
+            padding: "0.2rem 0.4rem",
+            borderRadius: 4,
+            border: "1px solid rgba(255, 255, 255, 0.08)",
+          }}
+        >
+          <ArrowLeftRight size={11} />
+          <span>{sellerDisplayName}</span>
+        </div>
+
+        {/* Message Sequence Trail with internal horizontal scrollbar */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "0.4rem",
+            overflowX: "auto",
+            minWidth: 0,
+            flex: 1,
+            paddingBottom: channelMsgs.length > 0 ? 3 : 0,
+            scrollbarWidth: "thin",
+          }}
+        >
+          {channelMsgs.length > 0 ? (
+            channelMsgs.map((msg, idx) => {
+              const isBuyerMsg = msg.from.toLowerCase().includes("buyer") || msg.from.toLowerCase().includes("razorslice");
+              const isRfq = msg.type === "RFQ";
+              const isCounter = msg.type === "COUNTER_OFFER";
+              const isOffer = msg.type === "OFFER";
+              const isAccept = msg.type === "ACCEPT" || msg.type === "SPLIT_ACCEPT";
+
+              let pillBg = "rgba(13, 148, 251, 0.22)";
+              let pillBorder = "#0D94FB";
+              let pillColor = "#e0f2fe";
+              let label = isRfq
+                ? `buyer ask: ${(msg.payload as any).quantity_kg || 5}u ${(msg.payload as any).item || "flour"} @ ₹${(msg.payload as any).target_price_per_unit || (msg.payload as any).buyer_max_price_per_kg || 5}/u`
+                : isCounter
+                ? `buyer counter: ${(msg.payload as any).quantity_kg}u @ ₹${(msg.payload as any).target_price_per_unit || 3.5}/u`
+                : isOffer
+                ? `seller response: ${(msg.payload as any).quantity_kg}u @ ₹${(msg.payload as any).final_price_per_kg}/u (-${(msg.payload as any).discount_pct}%)`
+                : isAccept
+                ? `🏆 Finalized Deal`
+                : msg.type;
+
+              if (!isBuyerMsg) {
+                pillBg = "rgba(16, 185, 129, 0.22)";
+                pillBorder = "#10b981";
+                pillColor = "#6ee7b7";
+              }
+
+              return (
+                <button
+                  key={msg.message_id || idx}
+                  onClick={() => onSelectMessage && msg.message_id && onSelectMessage(msg.message_id)}
+                  title="Click to view & inspect this envelope in the Envelope Trace below"
+                  style={{
+                    background: pillBg,
+                    border: `1.5px solid ${pillBorder}`,
+                    borderRadius: 18,
+                    padding: "0.2rem 0.6rem",
+                    color: pillColor,
+                    fontSize: "0.7rem",
+                    fontWeight: 700,
+                    whiteSpace: "nowrap",
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "0.3rem",
+                    flexShrink: 0,
+                    transition: "all 0.15s ease",
+                  }}
+                >
+                  <span>{label}</span>
+                  <ExternalLink size={10} style={{ opacity: 0.6 }} />
+                </button>
+              );
+            })
+          ) : (
+            <div
+              style={{
+                color: "#64748b",
+                fontSize: "0.7rem",
+                fontStyle: "italic",
+                display: "flex",
+                alignItems: "center",
+                gap: "0.3rem",
+                padding: "0.15rem 0.4rem",
+              }}
+            >
+              <Clock size={12} style={{ opacity: 0.7 }} />
+              <span>Awaiting negotiation events...</span>
+            </div>
+          )}
+        </div>
+
+        {/* Finalized Summary Badge */}
+        {finalized && finalizedSummary && (
+          <div
+            style={{
+              background: "#064e3b",
+              border: "1.5px solid #10b981",
+              borderRadius: 8,
+              padding: "0.2rem 0.5rem",
+              color: "#a7f3d0",
+              fontSize: "0.68rem",
+              fontWeight: 800,
+              display: "flex",
+              alignItems: "center",
+              gap: "0.3rem",
+              flexShrink: 0,
+              boxShadow: "0 0 8px rgba(16, 185, 129, 0.4)",
+            }}
+          >
+            <Award size={12} color="#34d399" />
+            <span>🏆 Finalized: {finalizedSummary.itemsSummary} (₹{finalizedSummary.totalCost})</span>
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div
       style={{
@@ -680,9 +860,10 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
         boxShadow: "0 8px 32px rgba(0, 0, 0, 0.45)",
         color: "#f8fafc",
         padding: "1.25rem",
-        marginBottom: "1.5rem",
         position: "relative",
         overflow: "hidden",
+        width: "100%",
+        boxSizing: "border-box",
       }}
     >
       {/* Background Blueprint Grid Lines */}
@@ -743,7 +924,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
         </div>
       )}
 
-      {/* Top Header & Presets */}
+      {/* TOP: Header Bar & Preset Quick Select */}
       <div
         style={{
           display: "flex",
@@ -757,20 +938,18 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: "0.65rem" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-            <ChefHat size={20} color="#38bdf8" />
-            <h2
-              style={{
-                fontSize: "1.1rem",
-                fontWeight: 800,
-                color: "#ffffff",
-                letterSpacing: "-0.01em",
-                margin: 0,
-              }}
-            >
-              RazorSlice Kitchen Agent & A2A Supply Simulation
-            </h2>
-          </div>
+          <ChefHat size={22} color="#38bdf8" />
+          <h2
+            style={{
+              fontSize: "1.15rem",
+              fontWeight: 800,
+              color: "#ffffff",
+              letterSpacing: "-0.01em",
+              margin: 0,
+            }}
+          >
+            RazorSlice Kitchen & Multi-Seller A2A Negotiation Architecture
+          </h2>
         </div>
 
         {/* Preset quick buttons */}
@@ -842,164 +1021,142 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
         </div>
       </div>
 
-      {/* TOP: Menu Card (Updated with 5-Flour Pizza Recipes) */}
+      {/* TOP CENTER: Menu Recipes Bar */}
       <div
         style={{
           border: "2px solid #0D94FB",
-          borderRadius: 12,
-          padding: "0.65rem 0.9rem",
-          background: "rgba(13, 148, 251, 0.05)",
-          marginBottom: "1rem",
+          borderRadius: 14,
+          padding: "0.55rem 0.9rem",
+          background: "rgba(13, 148, 251, 0.06)",
+          marginBottom: "1.25rem",
           position: "relative",
           zIndex: 2,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          flexWrap: "wrap",
+          gap: "0.75rem",
         }}
       >
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            marginBottom: "0.35rem",
-          }}
-        >
+        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
           <span
             style={{
               color: "#38bdf8",
               fontSize: "0.85rem",
               fontWeight: 800,
-              letterSpacing: "0.02em",
+              letterSpacing: "0.04em",
+              textTransform: "uppercase",
             }}
           >
-            Menu Recipes (Par: Flour 30u, Others 5u)
+            Menu
           </span>
-          <span style={{ fontSize: "0.7rem", color: "#94a3b8", fontStyle: "italic" }}>
-            Kitchen Order Agent decrements stock and triggers A2A Buyer on par breach
+          <span style={{ fontSize: "0.7rem", color: "#94a3b8" }}>
+            (Par Stock: Flour 30u, Cheese 5u, Tomatoes 5u, Onions 5u, Milk 5u)
           </span>
         </div>
 
         <div
           style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
-            gap: "0.5rem",
+            display: "flex",
+            alignItems: "center",
+            gap: "0.75rem",
             fontSize: "0.75rem",
             color: "#e2e8f0",
+            flexWrap: "wrap",
           }}
         >
           <div
             style={{
-              background: "rgba(15, 23, 42, 0.6)",
-              padding: "0.4rem 0.6rem",
+              background: "rgba(15, 23, 42, 0.7)",
+              padding: "0.25rem 0.6rem",
               borderRadius: 6,
-              border: "1px solid rgba(13, 148, 251, 0.2)",
+              border: "1px solid rgba(13, 148, 251, 0.25)",
             }}
           >
-            <div style={{ fontWeight: 700, color: "#38bdf8" }}>Margherita</div>
-            <div style={{ color: "#cbd5e1", fontSize: "0.72rem" }}>
-              = <strong>-5 Flour</strong>, -2 Cheese, -1 Tomato
-            </div>
+            <span style={{ fontWeight: 700, color: "#38bdf8" }}>Margherita: </span>
+            <span>5 Flour, 2 Cheese, 1 Tomato</span>
           </div>
 
           <div
             style={{
-              background: "rgba(15, 23, 42, 0.6)",
-              padding: "0.4rem 0.6rem",
+              background: "rgba(15, 23, 42, 0.7)",
+              padding: "0.25rem 0.6rem",
               borderRadius: 6,
-              border: "1px solid rgba(13, 148, 251, 0.2)",
+              border: "1px solid rgba(13, 148, 251, 0.25)",
             }}
           >
-            <div style={{ fontWeight: 700, color: "#38bdf8" }}>Farm fresh</div>
-            <div style={{ color: "#cbd5e1", fontSize: "0.72rem" }}>
-              = <strong>-5 Flour</strong>, -1 Cheese, -1 Tomato, -2 Onions
-            </div>
+            <span style={{ fontWeight: 700, color: "#38bdf8" }}>Farm fresh: </span>
+            <span>5 Flour, 1 Cheese, 1 Tomato, 2 Onions</span>
           </div>
 
           <div
             style={{
-              background: "rgba(15, 23, 42, 0.6)",
-              padding: "0.4rem 0.6rem",
+              background: "rgba(15, 23, 42, 0.7)",
+              padding: "0.25rem 0.6rem",
               borderRadius: 6,
-              border: "1px solid rgba(13, 148, 251, 0.2)",
+              border: "1px solid rgba(13, 148, 251, 0.25)",
             }}
           >
-            <div style={{ fontWeight: 700, color: "#38bdf8" }}>Milk shake</div>
-            <div style={{ color: "#cbd5e1", fontSize: "0.72rem" }}>= -2 Milk</div>
+            <span style={{ fontWeight: 700, color: "#38bdf8" }}>Milk shake: </span>
+            <span>2 Milk</span>
           </div>
         </div>
       </div>
 
-      {/* MAIN DIAGRAM CANVAS: RazorSlice Pantry + Agent + Queue + Connections + 3 Sellers */}
+      {/* ========================================================================= */}
+      {/* MAIN ARCHITECTURAL CANVAS (Strictly In-Bounds, 3 Responsive Columns)      */}
+      {/* Left: Inventory + Agent + Order Queue                                      */}
+      {/* Middle: 3 Communication Channel Boxes (Real Messages Only + Scrollable)    */}
+      {/* Right: 3 Seller Agents + Catalog Inventory Boxes                          */}
+      {/* ========================================================================= */}
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "minmax(310px, 1.25fr) 60px minmax(290px, 1.15fr)",
-          gap: "0.5rem",
-          alignItems: "start",
+          gridTemplateColumns: "minmax(250px, 280px) minmax(0, 1fr) minmax(240px, 270px)",
+          gap: "1rem",
+          alignItems: "stretch",
           position: "relative",
           zIndex: 2,
+          width: "100%",
+          minWidth: 0,
         }}
       >
-        {/* LEFT COLUMN: RazorSlice Inventory Box + RazorSlice Agent + Dynamic Customer Queue */}
-        <div>
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "1.1fr 0.9fr",
-              gap: "0.6rem",
-              alignItems: "start",
-            }}
-          >
-            {/* RazorSlice Inventory Box (Dashed Orange Border) with Par Stock Indicators */}
+        {/* LEFT COLUMN: Inventory Box + Agent RazorSlice + Customer Line */}
+        <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem", minWidth: 0 }}>
+          <div style={{ display: "flex", gap: "0.5rem", alignItems: "flex-start", minWidth: 0 }}>
+            {/* 1. Buyer Inventory Box (Dashed Orange Outline) */}
             <div
               style={{
                 border: "2px dashed #f59e0b",
                 borderRadius: 12,
-                padding: "0.6rem",
+                padding: "0.5rem 0.55rem",
                 background: "rgba(245, 158, 11, 0.03)",
+                flex: "1 1 50%",
+                minWidth: 0,
               }}
             >
               <div
                 style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  marginBottom: "0.4rem",
+                  color: "#f59e0b",
+                  fontSize: "0.75rem",
+                  fontWeight: 800,
+                  marginBottom: "0.35rem",
+                  textAlign: "center",
                 }}
               >
-                <span
-                  style={{
-                    color: "#f59e0b",
-                    fontSize: "0.78rem",
-                    fontWeight: 800,
-                    textTransform: "lowercase",
-                  }}
-                >
-                  pantry inventory
-                </span>
-                <span
-                  style={{
-                    color: "#94a3b8",
-                    fontSize: "0.62rem",
-                    background: "rgba(245, 158, 11, 0.12)",
-                    padding: "0.15rem 0.35rem",
-                    borderRadius: 4,
-                  }}
-                >
-                  Par Monitored
-                </span>
+                inventory
               </div>
 
-              <div style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.22rem" }}>
                 {[
-                  { key: "cheese" as const, name: "cheese", par: PAR_STOCK_LEVELS.cheese, required: totalMenuRequirements.cheese },
-                  { key: "flour" as const, name: "flour", par: PAR_STOCK_LEVELS.flour, required: totalMenuRequirements.flour },
-                  { key: "tomatoes" as const, name: "tomatoes", par: PAR_STOCK_LEVELS.tomatoes, required: totalMenuRequirements.tomatoes },
-                  { key: "onions" as const, name: "onions", par: PAR_STOCK_LEVELS.onions, required: totalMenuRequirements.onions },
-                  { key: "milk" as const, name: "milk", par: PAR_STOCK_LEVELS.milk, required: totalMenuRequirements.milk },
+                  { key: "cheese" as const, name: "cheese", par: PAR_STOCK_LEVELS.cheese },
+                  { key: "flour" as const, name: "flour", par: PAR_STOCK_LEVELS.flour },
+                  { key: "tomatoes" as const, name: "tomatoes", par: PAR_STOCK_LEVELS.tomatoes },
+                  { key: "onions" as const, name: "onions", par: PAR_STOCK_LEVELS.onions },
+                  { key: "milk" as const, name: "milk", par: PAR_STOCK_LEVELS.milk },
                 ].map((item) => {
                   const currentVal = buyerStock[item.key];
                   const isBelowPar = currentVal < item.par;
-                  const deficitToPar = Math.max(0, item.par - currentVal);
 
                   return (
                     <div
@@ -1008,41 +1165,32 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
                         display: "flex",
                         alignItems: "center",
                         justifyContent: "space-between",
-                        background: isBelowPar ? "rgba(239, 68, 68, 0.12)" : "rgba(15, 23, 42, 0.6)",
-                        border: isBelowPar ? "1px solid rgba(239, 68, 68, 0.3)" : "1px solid transparent",
-                        padding: "0.22rem 0.4rem",
-                        borderRadius: 6,
-                        transition: "all 0.2s ease",
+                        background: isBelowPar ? "rgba(239, 68, 68, 0.14)" : "rgba(15, 23, 42, 0.6)",
+                        padding: "0.15rem 0.3rem",
+                        borderRadius: 5,
+                        fontSize: "0.7rem",
                       }}
                     >
-                      <div style={{ display: "flex", flexDirection: "column" }}>
-                        <span
-                          style={{
-                            fontSize: "0.72rem",
-                            color: isBelowPar ? "#fca5a5" : "#e2e8f0",
-                            fontWeight: 600,
-                          }}
-                        >
-                          {item.name}-{currentVal}
-                        </span>
-                        <span style={{ fontSize: "0.58rem", color: "#94a3b8" }}>
-                          Par: {item.par}u{" "}
-                          {isBelowPar ? (
-                            <strong style={{ color: "#ef4444" }}>(-{deficitToPar} below par)</strong>
-                          ) : (
-                            <span style={{ color: "#34d399", fontWeight: 600 }}>✓ Above Par</span>
-                          )}
-                        </span>
-                      </div>
+                      <span
+                        style={{
+                          color: isBelowPar ? "#fca5a5" : "#e2e8f0",
+                          fontWeight: 700,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {item.name}-{currentVal}
+                      </span>
 
-                      <div style={{ display: "flex", alignItems: "center", gap: "0.2rem" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "0.1rem", flexShrink: 0 }}>
                         <button
                           onClick={() => updateBuyerItem(item.key, -1)}
                           disabled={isRunning}
                           style={{
-                            width: 17,
-                            height: 17,
-                            borderRadius: 4,
+                            width: 14,
+                            height: 14,
+                            borderRadius: 3,
                             background: "rgba(255, 255, 255, 0.1)",
                             border: "none",
                             color: "#ffffff",
@@ -1052,26 +1200,15 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
                             justifyContent: "center",
                           }}
                         >
-                          <Minus size={9} />
+                          <Minus size={8} />
                         </button>
-                        <span
-                          style={{
-                            fontSize: "0.76rem",
-                            fontWeight: 800,
-                            color: isBelowPar ? "#f87171" : "#38bdf8",
-                            minWidth: 14,
-                            textAlign: "center",
-                          }}
-                        >
-                          {currentVal}
-                        </span>
                         <button
                           onClick={() => updateBuyerItem(item.key, 1)}
                           disabled={isRunning}
                           style={{
-                            width: 17,
-                            height: 17,
-                            borderRadius: 4,
+                            width: 14,
+                            height: 14,
+                            borderRadius: 3,
                             background: "rgba(255, 255, 255, 0.1)",
                             border: "none",
                             color: "#ffffff",
@@ -1081,7 +1218,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
                             justifyContent: "center",
                           }}
                         >
-                          <Plus size={9} />
+                          <Plus size={8} />
                         </button>
                       </div>
                     </div>
@@ -1090,263 +1227,212 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
 
                 <div
                   style={{
-                    marginTop: "0.2rem",
-                    fontSize: "0.65rem",
-                    color: "#fbbf24",
+                    color: "#f59e0b",
+                    fontSize: "0.62rem",
                     fontWeight: 700,
                     textAlign: "center",
-                    padding: "0.2rem",
-                    background: "rgba(245, 158, 11, 0.1)",
-                    borderRadius: 4,
+                    marginTop: "0.15rem",
                   }}
                 >
-                  Flour Par: 30u | Others Par: 5u
+                  target stock = 30
                 </div>
               </div>
             </div>
 
-            {/* RazorSlice Agent Box + Customer Order Queue */}
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
-              <div
-                style={{
-                  width: "100%",
-                  border: "2px solid #ffffff",
-                  borderRadius: 14,
-                  background: "#0d1527",
-                  padding: "0.65rem 0.5rem 0.35rem",
-                  display: "flex",
-                  flexDirection: "column",
-                  alignItems: "center",
-                  boxShadow: "0 0 16px rgba(255, 255, 255, 0.12)",
-                  position: "relative",
-                }}
-              >
-                <div
-                  style={{
-                    padding: "0.12rem 0.55rem",
-                    borderRadius: 6,
-                    border: "1.5px solid #ea580c",
-                    background: "rgba(234, 88, 12, 0.25)",
-                    color: "#fb923c",
-                    fontSize: "0.68rem",
-                    fontWeight: 800,
-                    marginBottom: "0.3rem",
-                    letterSpacing: "0.02em",
-                  }}
-                >
-                  Kitchen & Buyer Agent
-                </div>
-
-                <div
-                  style={{
-                    fontSize: "0.9rem",
-                    fontWeight: 800,
-                    color: "#ffffff",
-                    marginBottom: "0.45rem",
-                  }}
-                >
-                  RazorSlice
-                </div>
-
-                <div
-                  style={{
-                    width: "85%",
-                    borderTop: "2px dashed #94a3b8",
-                    borderLeft: "2px dashed #94a3b8",
-                    borderRight: "2px dashed #94a3b8",
-                    borderTopLeftRadius: 4,
-                    borderTopRightRadius: 4,
-                    padding: "0.1rem 0.2rem",
-                    textAlign: "center",
-                    fontSize: "0.58rem",
-                    color: "#94a3b8",
-                    background: "rgba(148, 163, 184, 0.08)",
-                  }}
-                >
-                  [ Counter Gate ]
-                </div>
-              </div>
-
-              {/* Dynamic Customer Order Queue in Front of Gate */}
-              <div
-                style={{
-                  width: "100%",
-                  marginTop: "0.5rem",
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: "0.35rem",
-                }}
-              >
-                {orderQueue.length === 0 ? (
-                  <div
-                    style={{
-                      background: "rgba(16, 185, 129, 0.1)",
-                      border: "1px dashed #10b981",
-                      borderRadius: 8,
-                      padding: "0.6rem 0.4rem",
-                      textAlign: "center",
-                      color: "#6ee7b7",
-                      fontSize: "0.72rem",
-                      fontWeight: 600,
-                    }}
-                  >
-                    All Orders Fulfilled! 🎉
-                  </div>
-                ) : (
-                  orderQueue.map((order, idx) => {
-                    const isFront = idx === 0;
-                    return (
-                      <div
-                        key={order.id}
-                        style={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: "0.4rem",
-                          background: isFront
-                            ? "linear-gradient(90deg, rgba(13, 148, 251, 0.22) 0%, rgba(13, 148, 251, 0.08) 100%)"
-                            : "rgba(13, 148, 251, 0.06)",
-                          border: isFront ? "1.5px solid #0D94FB" : "1px solid rgba(13, 148, 251, 0.2)",
-                          borderRadius: 18,
-                          padding: "0.2rem 0.45rem 0.2rem 0.25rem",
-                          boxShadow: isFront ? "0 0 10px rgba(13, 148, 251, 0.3)" : "none",
-                          transition: "all 0.25s ease",
-                        }}
-                      >
-                        <div
-                          style={{
-                            width: 20,
-                            height: 20,
-                            borderRadius: "50%",
-                            border: isFront ? "2px solid #38bdf8" : "2px solid #0D94FB",
-                            background: isFront ? "#0D94FB" : "rgba(13, 148, 251, 0.3)",
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "center",
-                            fontSize: "0.62rem",
-                            fontWeight: 800,
-                            color: "#ffffff",
-                            flexShrink: 0,
-                          }}
-                        >
-                          {order.id}
-                        </div>
-                        <div style={{ display: "flex", flexDirection: "column", minWidth: 0, flex: 1 }}>
-                          <span
-                            style={{
-                              fontSize: "0.68rem",
-                              color: isFront ? "#ffffff" : "#bae6fd",
-                              fontWeight: isFront ? 700 : 600,
-                              lineHeight: 1.15,
-                              whiteSpace: "nowrap",
-                              overflow: "hidden",
-                              textOverflow: "ellipsis",
-                            }}
-                          >
-                            {order.name}
-                          </span>
-                          {isFront && (
-                            <span style={{ fontSize: "0.56rem", color: "#38bdf8", fontWeight: 700 }}>
-                              Next to fulfill
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* CENTER CONNECTOR: SVG Dashed Arrow Lines */}
-        <div
-          style={{
-            height: "100%",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            position: "relative",
-            minHeight: 250,
-          }}
-        >
-          <svg
-            style={{ width: "100%", height: "100%", overflow: "visible" }}
-            viewBox="0 0 60 250"
-            preserveAspectRatio="none"
-          >
-            <defs>
-              <marker id="arrowhead-white" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
-                <polygon points="0 0, 8 3, 0 6" fill="#ffffff" />
-              </marker>
-            </defs>
-
-            <path
-              d="M 5,75 C 25,75 35,35 55,35"
-              fill="none"
-              stroke="#ffffff"
-              strokeWidth="2"
-              strokeDasharray="4,4"
-              markerEnd="url(#arrowhead-white)"
-            />
-
-            <path
-              d="M 5,85 C 25,85 35,120 55,120"
-              fill="none"
-              stroke="#ffffff"
-              strokeWidth="2"
-              strokeDasharray="4,4"
-              markerEnd="url(#arrowhead-white)"
-            />
-
-            <path
-              d="M 5,95 C 25,95 35,205 55,205"
-              fill="none"
-              stroke="#ffffff"
-              strokeWidth="2"
-              strokeDasharray="4,4"
-              markerEnd="url(#arrowhead-white)"
-            />
-          </svg>
-        </div>
-
-        {/* RIGHT COLUMN: 3 Sellers (RazorPies, Razorcery-1, Razorcery-2) */}
-        <div style={{ display: "flex", flexDirection: "column", gap: "0.55rem" }}>
-          {/* SELLER 1: RazorPies */}
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "1fr 1fr",
-              gap: "0.45rem",
-              alignItems: "center",
-            }}
-          >
+            {/* 2. Agent RazorSlice Box (White solid outline) */}
             <div
               style={{
                 border: "2px solid #ffffff",
-                borderRadius: 10,
+                borderRadius: 14,
+                background: "#0d1527",
+                padding: "0.55rem 0.45rem 0.35rem",
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                flex: "1 1 50%",
+                minWidth: 0,
+                boxShadow: "0 0 16px rgba(255, 255, 255, 0.1)",
+              }}
+            >
+              <div
+                style={{
+                  padding: "0.12rem 0.55rem",
+                  borderRadius: 6,
+                  border: "1.5px solid #ea580c",
+                  background: "rgba(234, 88, 12, 0.3)",
+                  color: "#fb923c",
+                  fontSize: "0.68rem",
+                  fontWeight: 800,
+                  marginBottom: "0.35rem",
+                }}
+              >
+                agent
+              </div>
+
+              <div
+                style={{
+                  fontSize: "0.9rem",
+                  fontWeight: 800,
+                  color: "#ffffff",
+                  marginBottom: "0.65rem",
+                }}
+              >
+                RazorSlice
+              </div>
+
+              <div
+                style={{
+                  width: "90%",
+                  borderTop: "2px dashed #94a3b8",
+                  borderLeft: "2px dashed #94a3b8",
+                  borderRight: "2px dashed #94a3b8",
+                  borderTopLeftRadius: 4,
+                  borderTopRightRadius: 4,
+                  padding: "0.1rem 0.2rem",
+                  textAlign: "center",
+                  fontSize: "0.55rem",
+                  color: "#94a3b8",
+                  background: "rgba(148, 163, 184, 0.08)",
+                }}
+              >
+                [ Counter Gate ]
+              </div>
+            </div>
+          </div>
+
+          {/* 3. Customer Order Queue */}
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: "0.25rem",
+              paddingLeft: "0.25rem",
+              minWidth: 0,
+            }}
+          >
+            {orderQueue.length === 0 ? (
+              <div
+                style={{
+                  background: "rgba(16, 185, 129, 0.1)",
+                  border: "1px dashed #10b981",
+                  borderRadius: 8,
+                  padding: "0.45rem",
+                  textAlign: "center",
+                  color: "#6ee7b7",
+                  fontSize: "0.7rem",
+                  fontWeight: 600,
+                }}
+              >
+                All Orders Fulfilled! 🎉
+              </div>
+            ) : (
+              orderQueue.map((order, idx) => {
+                const isFront = idx === 0;
+                return (
+                  <div
+                    key={order.id}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "0.45rem",
+                      background: isFront ? "rgba(13, 148, 251, 0.15)" : "transparent",
+                      padding: "0.12rem 0.3rem",
+                      borderRadius: 12,
+                      border: isFront ? "1px solid #0D94FB" : "1px solid transparent",
+                      minWidth: 0,
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: 17,
+                        height: 17,
+                        borderRadius: "50%",
+                        border: "2px solid #0D94FB",
+                        background: isFront ? "#0D94FB" : "rgba(13, 148, 251, 0.25)",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        fontSize: "0.58rem",
+                        fontWeight: 800,
+                        color: "#ffffff",
+                        flexShrink: 0,
+                      }}
+                    >
+                      {order.id}
+                    </div>
+
+                    <span
+                      style={{
+                        fontSize: "0.7rem",
+                        color: isFront ? "#ffffff" : "#94a3b8",
+                        fontWeight: isFront ? 700 : 500,
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        minWidth: 0,
+                      }}
+                    >
+                      {order.name.toLowerCase()}
+                    </span>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
+
+        {/* MIDDLE COLUMN: The 3 Message Queue Channel Boxes (Real Messages Only + Scrollable) */}
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            justifyContent: "space-around",
+            gap: "0.75rem",
+            minWidth: 0,
+          }}
+        >
+          {/* Channel 1: RazorSlice <-> RazorPies */}
+          {renderMessageChannel("razor_pies", "RazorPies")}
+
+          {/* Channel 2: RazorSlice <-> Razorcery-1 */}
+          {renderMessageChannel("razorcery_1", "Razorcery-1")}
+
+          {/* Channel 3: RazorSlice <-> Razorcery-2 */}
+          {renderMessageChannel("razorcery_2", "Razorcery-2")}
+        </div>
+
+        {/* RIGHT COLUMN: 3 Sellers (Green outline boxes + Dashed Orange Inventory) */}
+        <div style={{ display: "flex", flexDirection: "column", gap: "0.6rem", minWidth: 0 }}>
+          {/* SELLER 1: RazorPies */}
+          <div style={{ display: "flex", gap: "0.4rem", alignItems: "center", minWidth: 0 }}>
+            <div
+              style={{
+                border: "2px solid #10b981",
+                borderRadius: 12,
                 background: "#0d1527",
                 padding: "0.45rem 0.5rem",
                 display: "flex",
                 flexDirection: "column",
                 alignItems: "center",
+                flex: "1 1 45%",
+                minWidth: 0,
               }}
             >
               <div
                 style={{
-                  padding: "0.08rem 0.4rem",
-                  borderRadius: 4,
-                  border: "1px solid #10b981",
-                  background: "rgba(16, 185, 129, 0.2)",
-                  color: "#34d399",
+                  padding: "0.08rem 0.45rem",
+                  borderRadius: 5,
+                  border: "1.5px solid #ea580c",
+                  background: "rgba(234, 88, 12, 0.3)",
+                  color: "#fb923c",
                   fontSize: "0.62rem",
                   fontWeight: 800,
                   marginBottom: "0.2rem",
                 }}
               >
-                Seller Agent
+                agent
               </div>
-              <div style={{ fontSize: "0.78rem", fontWeight: 800, color: "#ffffff" }}>
+              <div style={{ fontSize: "0.78rem", fontWeight: 800, color: "#34d399", whiteSpace: "nowrap" }}>
                 RazorPies
               </div>
             </div>
@@ -1355,14 +1441,16 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
               style={{
                 border: "2px dashed #f59e0b",
                 borderRadius: 10,
-                padding: "0.4rem",
+                padding: "0.3rem 0.4rem",
                 background: "rgba(245, 158, 11, 0.03)",
+                flex: "1 1 55%",
+                minWidth: 0,
               }}
             >
-              <div style={{ color: "#f59e0b", fontSize: "0.68rem", fontWeight: 800, marginBottom: "0.2rem" }}>
-                catalog inventory
+              <div style={{ color: "#f59e0b", fontSize: "0.65rem", fontWeight: 800, marginBottom: "0.15rem", textAlign: "center" }}>
+                inventory
               </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: "0.2rem" }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.12rem", fontSize: "0.65rem" }}>
                 {(["cheese", "flour", "milk"] as const).map((it) => (
                   <div
                     key={it}
@@ -1370,23 +1458,21 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
                       display: "flex",
                       alignItems: "center",
                       justifyContent: "space-between",
-                      fontSize: "0.68rem",
-                      background: "rgba(15, 23, 42, 0.6)",
-                      padding: "0.15rem 0.3rem",
-                      borderRadius: 4,
+                      color: "#6ee7b7",
+                      fontWeight: 700,
                     }}
                   >
-                    <span style={{ color: "#6ee7b7", fontWeight: 700 }}>
+                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                       ₹{razorPies[it].price}, {it}-{razorPies[it].stock}
                     </span>
-                    <div style={{ display: "flex", alignItems: "center", gap: "0.15rem" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "0.1rem", flexShrink: 0 }}>
                       <button
                         onClick={() => updateSellerStock("razorPies", it, -1)}
                         disabled={isRunning}
                         style={{
-                          width: 14,
-                          height: 14,
-                          borderRadius: 3,
+                          width: 13,
+                          height: 13,
+                          borderRadius: 2,
                           background: "rgba(255,255,255,0.1)",
                           border: "none",
                           color: "#fff",
@@ -1396,15 +1482,15 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
                           justifyContent: "center",
                         }}
                       >
-                        <Minus size={8} />
+                        <Minus size={7} />
                       </button>
                       <button
                         onClick={() => updateSellerStock("razorPies", it, 1)}
                         disabled={isRunning}
                         style={{
-                          width: 14,
-                          height: 14,
-                          borderRadius: 3,
+                          width: 13,
+                          height: 13,
+                          borderRadius: 2,
                           background: "rgba(255,255,255,0.1)",
                           border: "none",
                           color: "#fff",
@@ -1414,7 +1500,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
                           justifyContent: "center",
                         }}
                       >
-                        <Plus size={8} />
+                        <Plus size={7} />
                       </button>
                     </div>
                   </div>
@@ -1424,40 +1510,35 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
           </div>
 
           {/* SELLER 2: Razorcery-1 */}
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "1fr 1fr",
-              gap: "0.45rem",
-              alignItems: "center",
-            }}
-          >
+          <div style={{ display: "flex", gap: "0.4rem", alignItems: "center", minWidth: 0 }}>
             <div
               style={{
-                border: "2px solid #ffffff",
-                borderRadius: 10,
+                border: "2px solid #10b981",
+                borderRadius: 12,
                 background: "#0d1527",
                 padding: "0.45rem 0.5rem",
                 display: "flex",
                 flexDirection: "column",
                 alignItems: "center",
+                flex: "1 1 45%",
+                minWidth: 0,
               }}
             >
               <div
                 style={{
-                  padding: "0.08rem 0.4rem",
-                  borderRadius: 4,
-                  border: "1px solid #10b981",
-                  background: "rgba(16, 185, 129, 0.2)",
-                  color: "#34d399",
+                  padding: "0.08rem 0.45rem",
+                  borderRadius: 5,
+                  border: "1.5px solid #ea580c",
+                  background: "rgba(234, 88, 12, 0.3)",
+                  color: "#fb923c",
                   fontSize: "0.62rem",
                   fontWeight: 800,
                   marginBottom: "0.2rem",
                 }}
               >
-                Seller Agent
+                agent
               </div>
-              <div style={{ fontSize: "0.78rem", fontWeight: 800, color: "#ffffff" }}>
+              <div style={{ fontSize: "0.78rem", fontWeight: 800, color: "#34d399", whiteSpace: "nowrap" }}>
                 Razorcery-1
               </div>
             </div>
@@ -1466,14 +1547,16 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
               style={{
                 border: "2px dashed #f59e0b",
                 borderRadius: 10,
-                padding: "0.4rem",
+                padding: "0.3rem 0.4rem",
                 background: "rgba(245, 158, 11, 0.03)",
+                flex: "1 1 55%",
+                minWidth: 0,
               }}
             >
-              <div style={{ color: "#f59e0b", fontSize: "0.68rem", fontWeight: 800, marginBottom: "0.2rem" }}>
-                catalog inventory
+              <div style={{ color: "#f59e0b", fontSize: "0.65rem", fontWeight: 800, marginBottom: "0.15rem", textAlign: "center" }}>
+                inventory
               </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: "0.2rem" }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.12rem", fontSize: "0.65rem" }}>
                 {(["flour", "tomatoes", "onions"] as const).map((it) => (
                   <div
                     key={it}
@@ -1481,23 +1564,21 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
                       display: "flex",
                       alignItems: "center",
                       justifyContent: "space-between",
-                      fontSize: "0.68rem",
-                      background: "rgba(15, 23, 42, 0.6)",
-                      padding: "0.15rem 0.3rem",
-                      borderRadius: 4,
+                      color: "#6ee7b7",
+                      fontWeight: 700,
                     }}
                   >
-                    <span style={{ color: "#6ee7b7", fontWeight: 700 }}>
+                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                       ₹{razorcery1[it].price}, {it}-{razorcery1[it].stock}
                     </span>
-                    <div style={{ display: "flex", alignItems: "center", gap: "0.15rem" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "0.1rem", flexShrink: 0 }}>
                       <button
                         onClick={() => updateSellerStock("razorcery1", it, -1)}
                         disabled={isRunning}
                         style={{
-                          width: 14,
-                          height: 14,
-                          borderRadius: 3,
+                          width: 13,
+                          height: 13,
+                          borderRadius: 2,
                           background: "rgba(255,255,255,0.1)",
                           border: "none",
                           color: "#fff",
@@ -1507,15 +1588,15 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
                           justifyContent: "center",
                         }}
                       >
-                        <Minus size={8} />
+                        <Minus size={7} />
                       </button>
                       <button
                         onClick={() => updateSellerStock("razorcery1", it, 1)}
                         disabled={isRunning}
                         style={{
-                          width: 14,
-                          height: 14,
-                          borderRadius: 3,
+                          width: 13,
+                          height: 13,
+                          borderRadius: 2,
                           background: "rgba(255,255,255,0.1)",
                           border: "none",
                           color: "#fff",
@@ -1525,7 +1606,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
                           justifyContent: "center",
                         }}
                       >
-                        <Plus size={8} />
+                        <Plus size={7} />
                       </button>
                     </div>
                   </div>
@@ -1535,40 +1616,35 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
           </div>
 
           {/* SELLER 3: Razorcery-2 */}
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "1fr 1fr",
-              gap: "0.45rem",
-              alignItems: "center",
-            }}
-          >
+          <div style={{ display: "flex", gap: "0.4rem", alignItems: "center", minWidth: 0 }}>
             <div
               style={{
-                border: "2px solid #ffffff",
-                borderRadius: 10,
+                border: "2px solid #10b981",
+                borderRadius: 12,
                 background: "#0d1527",
                 padding: "0.45rem 0.5rem",
                 display: "flex",
                 flexDirection: "column",
                 alignItems: "center",
+                flex: "1 1 45%",
+                minWidth: 0,
               }}
             >
               <div
                 style={{
-                  padding: "0.08rem 0.4rem",
-                  borderRadius: 4,
-                  border: "1px solid #10b981",
-                  background: "rgba(16, 185, 129, 0.2)",
-                  color: "#34d399",
+                  padding: "0.08rem 0.45rem",
+                  borderRadius: 5,
+                  border: "1.5px solid #ea580c",
+                  background: "rgba(234, 88, 12, 0.3)",
+                  color: "#fb923c",
                   fontSize: "0.62rem",
                   fontWeight: 800,
                   marginBottom: "0.2rem",
                 }}
               >
-                Seller Agent
+                agent
               </div>
-              <div style={{ fontSize: "0.78rem", fontWeight: 800, color: "#ffffff" }}>
+              <div style={{ fontSize: "0.78rem", fontWeight: 800, color: "#34d399", whiteSpace: "nowrap" }}>
                 Razorcery-2
               </div>
             </div>
@@ -1577,14 +1653,16 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
               style={{
                 border: "2px dashed #f59e0b",
                 borderRadius: 10,
-                padding: "0.4rem",
+                padding: "0.3rem 0.4rem",
                 background: "rgba(245, 158, 11, 0.03)",
+                flex: "1 1 55%",
+                minWidth: 0,
               }}
             >
-              <div style={{ color: "#f59e0b", fontSize: "0.68rem", fontWeight: 800, marginBottom: "0.2rem" }}>
-                catalog inventory
+              <div style={{ color: "#f59e0b", fontSize: "0.65rem", fontWeight: 800, marginBottom: "0.15rem", textAlign: "center" }}>
+                inventory
               </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: "0.2rem" }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.12rem", fontSize: "0.65rem" }}>
                 {(["milk", "tomatoes", "onions"] as const).map((it) => (
                   <div
                     key={it}
@@ -1592,23 +1670,21 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
                       display: "flex",
                       alignItems: "center",
                       justifyContent: "space-between",
-                      fontSize: "0.68rem",
-                      background: "rgba(15, 23, 42, 0.6)",
-                      padding: "0.15rem 0.3rem",
-                      borderRadius: 4,
+                      color: "#6ee7b7",
+                      fontWeight: 700,
                     }}
                   >
-                    <span style={{ color: "#6ee7b7", fontWeight: 700 }}>
+                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                       ₹{razorcery2[it].price}, {it}-{razorcery2[it].stock}
                     </span>
-                    <div style={{ display: "flex", alignItems: "center", gap: "0.15rem" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "0.1rem", flexShrink: 0 }}>
                       <button
                         onClick={() => updateSellerStock("razorcery2", it, -1)}
                         disabled={isRunning}
                         style={{
-                          width: 14,
-                          height: 14,
-                          borderRadius: 3,
+                          width: 13,
+                          height: 13,
+                          borderRadius: 2,
                           background: "rgba(255,255,255,0.1)",
                           border: "none",
                           color: "#fff",
@@ -1618,15 +1694,15 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
                           justifyContent: "center",
                         }}
                       >
-                        <Minus size={8} />
+                        <Minus size={7} />
                       </button>
                       <button
                         onClick={() => updateSellerStock("razorcery2", it, 1)}
                         disabled={isRunning}
                         style={{
-                          width: 14,
-                          height: 14,
-                          borderRadius: 3,
+                          width: 13,
+                          height: 13,
+                          borderRadius: 2,
                           background: "rgba(255,255,255,0.1)",
                           border: "none",
                           color: "#fff",
@@ -1636,7 +1712,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
                           justifyContent: "center",
                         }}
                       >
-                        <Plus size={8} />
+                        <Plus size={7} />
                       </button>
                     </div>
                   </div>
@@ -1797,7 +1873,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
         </div>
       </div>
 
-      {/* DEDICATED KITCHEN ORDER EVENT LOG FEED (Visually Distinct from A2A Audit Trail) */}
+      {/* DEDICATED KITCHEN ORDER EVENT LOG FEED */}
       <div
         style={{
           marginTop: "1rem",
@@ -1830,7 +1906,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
 
         <div
           style={{
-            maxHeight: 145,
+            maxHeight: 130,
             overflowY: "auto",
             display: "flex",
             flexDirection: "column",

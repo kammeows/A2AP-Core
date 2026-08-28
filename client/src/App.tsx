@@ -253,6 +253,12 @@ export const App: React.FC = () => {
     }
   };
 
+  const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
+
+  const handleSelectMessage = (msgId: string) => {
+    setHighlightedMessageId(msgId);
+  };
+
   return (
     <div className="app-container">
       {/* 1. Top Navbar: Completely sticking to the top as a proper sharp rectangle */}
@@ -264,27 +270,29 @@ export const App: React.FC = () => {
 
       {/* Main Content Layout */}
       <div className="main-content-wrapper">
-        {/* 2-Column Split: Left Side (Canvas + Trace) and Right Side (Phone taking lesser amount) */}
-        <div className="main-grid">
-          {/* Left Column: Divided vertically into Top (RazorSlice Architecture) and Bottom (Audit Trace) */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-            {/* Top Left Corner: What main-idea.md & image.png specify */}
-            <RazorSliceArchitecture
-              onRunAi={handleRunAi}
-              isRunning={isRunning}
-              delegationMode={delegationMode}
-              latestResult={latestResult}
-            />
+        {/* TOP: Simulation occupying the entire horizontal width */}
+        <div className="simulation-fullwidth">
+          <RazorSliceArchitecture
+            onRunAi={handleRunAi}
+            isRunning={isRunning}
+            delegationMode={delegationMode}
+            latestResult={latestResult}
+            messages={messages}
+            onSelectMessage={handleSelectMessage}
+          />
+        </div>
 
-            {/* Bottom Left: Left as it is (Explainable Envelope Trace) */}
+        {/* BOTTOM: Horizontal Split between Envelope Trace (Left) and Phone (Right) */}
+        <div className="bottom-split-grid">
+          <div>
             <EnvelopeTrace
               messages={messages}
               threadId={activeThreadId}
               isLoading={isRunning}
+              highlightedMessageId={highlightedMessageId}
             />
           </div>
 
-          {/* Right Column: Phone side taking a lesser amount */}
           <div>
             <MobileDevice
               delegationMode={delegationMode}

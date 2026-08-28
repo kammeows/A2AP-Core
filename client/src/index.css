@@ -55,14 +55,14 @@ button, input, select {
   height: 6px;
 }
 ::-webkit-scrollbar-track {
-  background: #f1f5f9;
+  background: rgba(15, 23, 42, 0.4);
 }
 ::-webkit-scrollbar-thumb {
-  background: #cbd5e1;
+  background: rgba(148, 163, 184, 0.35);
   border-radius: 4px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #94a3b8;
+  background: #38bdf8;
 }
 
 /* Range Slider Styling */
@@ -161,16 +161,22 @@ input[type="range"]::-moz-range-thumb {
   text-transform: uppercase;
 }
 
-/* Main Grid: Left side taking larger amount, right side (phone) taking lesser amount */
-.main-grid {
+/* Full width simulation container */
+.simulation-fullwidth {
+  width: 100%;
+  margin-bottom: 1.5rem;
+}
+
+/* Bottom Split: Left side (Envelope Trace) taking larger amount, right side (phone) taking lesser amount */
+.bottom-split-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.45fr) 390px;
+  grid-template-columns: minmax(0, 1.5fr) 390px;
   gap: 1.5rem;
   align-items: start;
 }
 
 @media (max-width: 1160px) {
-  .main-grid {
+  .bottom-split-grid {
     grid-template-columns: 1fr;
   }
 }

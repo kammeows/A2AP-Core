@@ -22,17 +22,28 @@ interface EnvelopeTraceProps {
   messages: Envelope[];
   threadId: string | null;
   isLoading: boolean;
+  highlightedMessageId?: string | null;
 }
 
 export const EnvelopeTrace: React.FC<EnvelopeTraceProps> = ({
   messages,
   threadId,
   isLoading,
+  highlightedMessageId,
 }) => {
   const [filter, setFilter] = useState<"all" | "agents" | "policy" | "orders">(
     "all",
   );
   const [expandedJson, setExpandedJson] = useState<Record<string, boolean>>({});
+
+  React.useEffect(() => {
+    if (highlightedMessageId) {
+      const el = document.getElementById(highlightedMessageId);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    }
+  }, [highlightedMessageId]);
 
   const toggleJson = (id: string) => {
     setExpandedJson((prev) => ({ ...prev, [id]: !prev[id] }));
@@ -349,18 +360,24 @@ export const EnvelopeTrace: React.FC<EnvelopeTraceProps> = ({
             const toActor = getActorLabel(envelope.to);
             const isJsonOpen = Boolean(expandedJson[envelope.message_id]);
 
+            const isHighlighted = highlightedMessageId === envelope.message_id;
+
             return (
               <div
+                id={envelope.message_id}
                 key={envelope.message_id || idx}
                 className="fade-in"
                 style={{
-                  background: "#ffffff",
-                  border: "1px solid #e2e8f0",
-                  borderLeft: `4px solid ${badge.border}`,
+                  background: isHighlighted ? "rgba(13, 148, 251, 0.04)" : "#ffffff",
+                  border: isHighlighted ? "2px solid #0D94FB" : "1px solid #e2e8f0",
+                  borderLeft: `5px solid ${badge.border}`,
                   borderRadius: 8,
                   padding: "0.9rem 1rem",
                   position: "relative",
-                  boxShadow: "0 1px 4px rgba(1, 38, 82, 0.04)",
+                  boxShadow: isHighlighted
+                    ? "0 0 20px rgba(13, 148, 251, 0.35)"
+                    : "0 1px 4px rgba(1, 38, 82, 0.04)",
+                  transition: "all 0.3s ease",
                 }}
               >
                 {/* Envelope Header Bar */}
