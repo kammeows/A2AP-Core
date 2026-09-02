@@ -73,8 +73,16 @@ export interface KitchenLogEntry {
   detail: string;
 }
 
-// Par stock bare minimums (simulation-2.md requirement 1)
+// Par stock bare minimums (reorder points) & target stock levels (min-max inventory model)
 export const PAR_STOCK_LEVELS: Record<keyof Omit<BuyerPantry, "targetStock">, number> = {
+  flour: 30,
+  cheese: 5,
+  tomatoes: 5,
+  onions: 5,
+  milk: 5,
+};
+
+export const TARGET_STOCK_LEVELS: Record<keyof Omit<BuyerPantry, "targetStock">, number> = {
   flour: 30,
   cheese: 5,
   tomatoes: 5,
@@ -167,7 +175,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
       time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
       type: "info",
       title: "Kitchen Order Agent Ready",
-      detail: "Deterministic order runner active. Par stock monitor: Flour=30, Cheese=5, Tomatoes=5, Onions=5, Milk=5.",
+      detail: "Deterministic min-max inventory runner active. Par levels: Flour=30, Cheese=5, Tomatoes=5, Onions=5, Milk=5.",
     },
   ]);
 
@@ -195,6 +203,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
   } | null>(null);
 
   const lastProcessedThreadRef = useRef<string | null>(null);
+  const procurementInFlightRef = useRef<Set<string>>(new Set<string>());
 
   const normalizeKey = (name: string): keyof BuyerPantry => {
     const s = (name || "").toLowerCase().trim();
@@ -358,8 +367,8 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
     milk: Math.max(4, allSessionOrders.reduce((sum, o) => sum + (o.recipe.milk || 0), 0)),
   };
 
-  // Proactive Par Stock & Buffer Calculation
-  const computeProactiveReplenishment = (currentPantry: BuyerPantry) => {
+  // Min-Max Inventory Model: Reorder when stock is below par (min), order up to target stock level (max).
+  const checkReorderTriggers = (currentPantry: BuyerPantry) => {
     const itemsToBuy: Array<{ item: string; quantity: number }> = [];
     const keys: Array<keyof Omit<BuyerPantry, "targetStock">> = [
       "flour",
@@ -369,28 +378,19 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
       "milk",
     ];
 
-    let hasBelowPar = false;
     for (const k of keys) {
-      if (currentPantry[k] < PAR_STOCK_LEVELS[k]) {
-        hasBelowPar = true;
-        break;
-      }
-    }
+      if (procurementInFlightRef.current.has(k)) continue; // in-flight guard
+      const current = currentPantry[k] ?? 0;
+      const reorderPoint = PAR_STOCK_LEVELS[k];
+      const target = TARGET_STOCK_LEVELS[k] ?? reorderPoint;
 
-    if (!hasBelowPar) return [];
-
-    for (const k of keys) {
-      const par = PAR_STOCK_LEVELS[k];
-      const current = currentPantry[k];
-      const buffer = k === "flour" ? 10 : 5;
-
-      if (current < par || current <= par + 1) {
-        const deficitToPar = Math.max(0, par - current);
-        const qtyToOrder = deficitToPar + buffer;
-        if (qtyToOrder > 0) {
+      // Only reorder if current stock is below the par reorder point
+      if (current < reorderPoint) {
+        const deficit = Math.max(0, target - current);
+        if (deficit > 0) {
           itemsToBuy.push({
             item: k,
-            quantity: qtyToOrder,
+            quantity: deficit,
           });
         }
       }
@@ -463,12 +463,14 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
         currentOrder.id
       );
 
-      const proactiveReplenishment = computeProactiveReplenishment(updatedStock);
+      const proactiveReplenishment = checkReorderTriggers(updatedStock);
       if (proactiveReplenishment.length > 0) {
+        proactiveReplenishment.forEach((i) => procurementInFlightRef.current.add(i.item));
+
         addLog(
           "par_trigger",
           `⚠️ Par Stock Breach Triggered`,
-          `Stock dropped below par levels! Buyer Agent scanning all pantry items and preparing safe buffer (+10 Flour, +5 others)...`,
+          `Stock dropped below par levels for: ${proactiveReplenishment.map((i) => `${i.item} (deficit: ${i.quantity}u)`).join(", ")}. Reordering up to target stock...`,
           currentOrder.id
         );
 
@@ -497,13 +499,17 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
           },
         };
 
-        await onRunAi("custom", {
-          itemsToProcure: proactiveReplenishment,
-          buyerStockKg: updatedStock.flour,
-          sellerStockKg: razorPies.cheese.stock + razorcery1.flour.stock + razorcery2.milk.stock,
-          buyerTargetStockKg: 30,
-          sellerInventories: currentSellerInventories,
-        });
+        try {
+          await onRunAi("custom", {
+            itemsToProcure: proactiveReplenishment,
+            buyerStockKg: updatedStock.flour,
+            sellerStockKg: razorPies.cheese.stock + razorcery1.flour.stock + razorcery2.milk.stock,
+            buyerTargetStockKg: 30,
+            sellerInventories: currentSellerInventories,
+          });
+        } finally {
+          proactiveReplenishment.forEach((i) => procurementInFlightRef.current.delete(i.item));
+        }
       }
 
       setActiveProcessingOrder(null);
@@ -512,19 +518,47 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
       addLog(
         "par_trigger",
         `⚠️ Immediate Stock Shortage on Order #${currentOrder.id}`,
-        `Missing: ${immediateDeficits.map((d) => `${d.quantity}u ${d.item}`).join(", ")}. Triggering A2A Procurement with safe buffer...`,
+        `Missing: ${immediateDeficits.map((d) => `${d.quantity}u ${d.item}`).join(", ")}. Triggering A2A Procurement up to target level...`,
         currentOrder.id
       );
 
-      const itemsToProcure = computeProactiveReplenishment(buyerStock);
+      const itemsToProcure: Array<{ item: string; quantity: number }> = [];
+      const keys: Array<keyof Omit<BuyerPantry, "targetStock">> = [
+        "flour",
+        "cheese",
+        "tomatoes",
+        "onions",
+        "milk",
+      ];
+
+      for (const k of keys) {
+        if (procurementInFlightRef.current.has(k)) continue;
+        const current = buyerStock[k] ?? 0;
+        const neededForRecipe = currentOrder.recipe[k] || 0;
+        const reorderPoint = PAR_STOCK_LEVELS[k];
+        const target = TARGET_STOCK_LEVELS[k] ?? reorderPoint;
+
+        if (current < neededForRecipe || current < reorderPoint) {
+          const deficit = Math.max(neededForRecipe - current, target - current);
+          if (deficit > 0) {
+            itemsToProcure.push({
+              item: k,
+              quantity: deficit,
+            });
+          }
+        }
+      }
+
       if (itemsToProcure.length === 0) {
         for (const d of immediateDeficits) {
           itemsToProcure.push({
             item: d.item,
-            quantity: d.quantity + (d.item === "flour" ? 10 : 5),
+            quantity: d.quantity,
           });
         }
       }
+
+      itemsToProcure.forEach((i) => procurementInFlightRef.current.add(i.item));
 
       addLog(
         "a2a_procure",
@@ -551,15 +585,20 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
         },
       };
 
-      const res = await onRunAi("custom", {
-        itemsToProcure,
-        buyerStockKg: buyerStock.flour,
-        sellerStockKg: razorPies.cheese.stock + razorcery1.flour.stock + razorcery2.milk.stock,
-        buyerTargetStockKg: 30,
-        sellerInventories: currentSellerInventories,
-      });
+      let res: NegotiationResult | null = null;
+      try {
+        res = await onRunAi("custom", {
+          itemsToProcure,
+          buyerStockKg: buyerStock.flour,
+          sellerStockKg: razorPies.cheese.stock + razorcery1.flour.stock + razorcery2.milk.stock,
+          buyerTargetStockKg: 30,
+          sellerInventories: currentSellerInventories,
+        });
+      } finally {
+        itemsToProcure.forEach((i) => procurementInFlightRef.current.delete(i.item));
+      }
 
-      if (res && res.status === "CONFIRMED") {
+      if (res && (res.status === "CONFIRMED" || res.status === "RENEGOTIATED_AND_CONFIRMED")) {
         await new Promise((r) => setTimeout(r, 650));
 
         setBuyerStock((prev) => {
@@ -636,7 +675,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
       addLog("info", "Surplus Stock Preset", "Pantry filled with high surplus stock.");
     } else if (preset === "low_par") {
       setBuyerStock({ cheese: 3, flour: 20, tomatoes: 4, onions: 3, milk: 4, targetStock: 30 });
-      addLog("par_trigger", "Low Par Stock Preset", "All items set below par stock (Flour: 20/30, Cheese: 3/5, Tomatoes: 4/5) to demonstrate proactive buffer replenishment.");
+      addLog("par_trigger", "Low Par Stock Preset", "All items set below par stock (Flour: 20/30, Cheese: 3/5, Tomatoes: 4/5, Onions: 3/5, Milk: 4/5) to demonstrate min-max target reordering.");
     } else if (preset === "over_cap") {
       setBuyerStock({ cheese: 0, flour: 0, tomatoes: 0, onions: 0, milk: 0, targetStock: 50 });
       setRazorPies({ cheese: { stock: 50, price: 40 }, flour: { stock: 50, price: 50 }, milk: { stock: 50, price: 50 } });
