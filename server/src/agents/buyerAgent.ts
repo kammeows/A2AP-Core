@@ -420,13 +420,129 @@ export function evaluateOffersDeterministically(
     };
   }
 
+  let rationale = "";
+  if (sortedOffers.length > 1) {
+    const nextBest = sortedOffers[1];
+    const diff = (nextBest.total_price - bestSingle.total_price).toFixed(2);
+    rationale = `Selected ${bestSingle.seller_id || "vendor"} among ${sortedOffers.length} competing supplier quotes: ${bestSingle.quantity_kg}u at ₹${bestSingle.final_price_per_kg}/unit (Total ₹${bestSingle.total_price}, ${bestSingle.discount_pct}% discount). Saves ₹${diff} over alternative quote from ${nextBest.seller_id} and clears our ₹${ceiling.toFixed(2)}/unit ceiling rule.`;
+  } else {
+    rationale = `Selected ${bestSingle.seller_id || "vendor"}: ${bestSingle.quantity_kg}u ${neededItem} at ₹${bestSingle.final_price_per_kg}/unit (Total ₹${bestSingle.total_price}${bestSingle.discount_pct > 0 ? `, ${bestSingle.discount_pct}% volume tier discount` : ""}). Rate complies with ₹${ceiling.toFixed(2)}/unit budget ceiling.`;
+  }
+
   return {
     action: "propose_accept",
     target_offer: bestSingle,
-    rationale: `Selected ${bestSingle.seller_id || "vendor"} offering ${bestSingle.quantity_kg} units at ₹${bestSingle.final_price_per_kg}/unit (Total: ₹${bestSingle.total_price}) with ${bestSingle.discount_pct}% discount.`,
+    rationale,
     accepted_upsell: acceptedUpsell,
     declined_upsell_reason: declinedUpsellReason,
   };
+}
+
+export interface CachedSellerCatalog {
+  seller_id: string;
+  name: string;
+  stocked_items: string[];
+  base_prices: Record<string, { base_price: number; unit?: string }>;
+  discount_tiers: Record<string, { min_quantity: number; discount_pct: number }[]>;
+  negotiable: boolean;
+  description: string;
+  cached_at: string;
+}
+
+/**
+ * Buyer Catalog Discovery & Caching Service
+ * 
+ * Per my-files/catalog-discovery.md:
+ * 1. At session start, the buyer agent discovers and caches all known sellers' Agent Cards,
+ *    base price sheets, and published volume-discount tiers ("what pricing is possible").
+ * 2. Crucial split: Tier structures and base prices are cached, but stock levels are NEVER
+ *    cached as decision-grade data. Live stock is always re-queried dynamically at the exact
+ *    moment of an actual RFQ to eliminate stale-data issues.
+ */
+export class BuyerCatalogService {
+  private static cachedCatalogs: CachedSellerCatalog[] | null = null;
+
+  /**
+   * Discovers all known sellers via Agent Cards and caches their published tier structures & base prices.
+   */
+  static discoverAndCacheCatalogs(): CachedSellerCatalog[] {
+    const cards = InventoryStore.getAgentCards();
+    const cached: CachedSellerCatalog[] = cards.map((card) => {
+      const basePrices: Record<string, { base_price: number; unit?: string }> = {};
+      for (const [item, info] of Object.entries(card.catalog)) {
+        basePrices[item] = {
+          base_price: info.base_price,
+          unit: info.unit,
+        };
+      }
+      return {
+        seller_id: card.agent_id,
+        name: card.name,
+        stocked_items: [...card.stocked_items],
+        base_prices: basePrices,
+        discount_tiers: card.discount_tiers ? JSON.parse(JSON.stringify(card.discount_tiers)) : {},
+        negotiable: card.negotiable,
+        description: card.description,
+        cached_at: new Date().toISOString(),
+      };
+    });
+    BuyerCatalogService.cachedCatalogs = cached;
+    return cached;
+  }
+
+  /**
+   * Returns cached seller catalogs, auto-discovering if not yet initialized.
+   */
+  static getCachedCatalogs(): CachedSellerCatalog[] {
+    if (!BuyerCatalogService.cachedCatalogs) {
+      return BuyerCatalogService.discoverAndCacheCatalogs();
+    }
+    return BuyerCatalogService.cachedCatalogs;
+  }
+
+  /**
+   * Discovers matching sellers for a specific deficit item from the cached catalog.
+   */
+  static getCachedSellersForItem(item: string): CachedSellerCatalog[] {
+    const catalogs = BuyerCatalogService.getCachedCatalogs();
+    const norm = item.toLowerCase().trim().replace(/s$/, "");
+    return catalogs.filter((c) =>
+      c.stocked_items.some(
+        (si) =>
+          si.toLowerCase().includes(item.toLowerCase()) ||
+          item.toLowerCase().includes(si.toLowerCase()) ||
+          si.toLowerCase().replace(/s$/, "") === norm
+      )
+    );
+  }
+
+  /**
+   * Retrieves published discount tiers for a specific seller and item.
+   */
+  static getTierStructure(
+    sellerId: string,
+    item: string
+  ): { min_quantity: number; discount_pct: number }[] {
+    const catalogs = BuyerCatalogService.getCachedCatalogs();
+    const normalizedSeller = sellerId.toLowerCase().replace(/[^a-z0-9_:]/g, "");
+    const seller = catalogs.find(
+      (c) => c.seller_id.toLowerCase().replace(/[^a-z0-9_:]/g, "") === normalizedSeller
+    );
+    if (!seller || !seller.discount_tiers) return [];
+
+    const norm = item.toLowerCase().trim().replace(/s$/, "");
+    const tierKey = Object.keys(seller.discount_tiers).find(
+      (k) => k.toLowerCase() === item.toLowerCase() || k.toLowerCase().replace(/s$/, "") === norm
+    );
+    return tierKey ? seller.discount_tiers[tierKey] : [];
+  }
+
+  /**
+   * Clears the in-memory catalog cache (e.g. for testing or system reset).
+   */
+  static clearCache(): void {
+    BuyerCatalogService.cachedCatalogs = null;
+  }
 }
 
 export async function buyerEvaluateOffer(
@@ -464,6 +580,11 @@ export async function buyerEvaluateOffer(
 export class BuyerAgent {
   static evaluateOffer = buyerEvaluateOffer;
   static evaluateOffersDeterministically = evaluateOffersDeterministically;
+  static discoverAndCacheCatalogs = BuyerCatalogService.discoverAndCacheCatalogs;
+  static getCachedCatalogs = BuyerCatalogService.getCachedCatalogs;
+  static getCachedSellersForItem = BuyerCatalogService.getCachedSellersForItem;
+  static getTierStructure = BuyerCatalogService.getTierStructure;
+  static clearCache = BuyerCatalogService.clearCache;
 }
 
 export default BuyerAgent;

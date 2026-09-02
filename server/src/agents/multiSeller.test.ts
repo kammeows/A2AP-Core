@@ -2,7 +2,7 @@ import { test, describe, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { runNegotiation } from "../orchestrator/orchestrator.js";
 import { InventoryStore } from "../inventory/inventoryStore.js";
-import { buyerEvaluateOffer } from "./buyerAgent.js";
+import { buyerEvaluateOffer, BuyerCatalogService } from "./buyerAgent.js";
 import { sellerRespondToRfq } from "./sellerAgent.js";
 import { computeSellerOffer } from "./pricingEngine.js";
 import { ThreadStore } from "../thread/threadStore.js";
@@ -283,5 +283,73 @@ describe("Multi-Seller Agent Network & Volume Negotiation", () => {
     // Final order confirmed for 4 units
     const confirmMsg = thread.find((m) => m.type === "ORDER_CONFIRM");
     assert.ok(confirmMsg);
+  });
+
+  test("12. Buyer discovers seller catalogs and caches published volume discount tiers & base prices at session start", () => {
+    BuyerCatalogService.clearCache();
+    const cached = BuyerCatalogService.discoverAndCacheCatalogs();
+    assert.ok(cached.length >= 3);
+
+    // RazorPies wholesale price sheet & discount tiers
+    const pies = cached.find((c) => c.seller_id === "agent:seller:razor_pies");
+    assert.ok(pies);
+    assert.equal(pies.base_prices["flour"].base_price, 8);
+    assert.deepEqual(pies.discount_tiers["flour"], [
+      { min_quantity: 10, discount_pct: 10 },
+      { min_quantity: 20, discount_pct: 27.5 },
+    ]);
+    assert.deepEqual(pies.discount_tiers["cheese"], [
+      { min_quantity: 5, discount_pct: 10 },
+      { min_quantity: 10, discount_pct: 20 },
+    ]);
+
+    // Razorcery-1 wholesale price sheet & discount tiers
+    const cery1 = cached.find((c) => c.seller_id === "agent:seller:razorcery_1");
+    assert.ok(cery1);
+    assert.equal(cery1.base_prices["flour"].base_price, 6);
+    assert.deepEqual(cery1.discount_tiers["flour"], [
+      { min_quantity: 5, discount_pct: 10 },
+      { min_quantity: 12, discount_pct: 20 },
+    ]);
+
+    // Querying matching sellers for flour returns RazorPies and Razorcery-1
+    const flourSellers = BuyerCatalogService.getCachedSellersForItem("flour");
+    assert.ok(flourSellers.some((s) => s.seller_id === "agent:seller:razor_pies"));
+    assert.ok(flourSellers.some((s) => s.seller_id === "agent:seller:razorcery_1"));
+  });
+
+  test("13. Cached catalog excludes decision-grade stock levels, and live stock is dynamically queried per RFQ", async () => {
+    // 1. Initial cached catalog has base prices and tiers, but buyer never treats stock as static
+    const cached = BuyerCatalogService.getCachedCatalogs();
+    const pies = cached.find((c) => c.seller_id === "agent:seller:razor_pies");
+    assert.ok(pies);
+    // Cached catalog does not contain authoritative live stock properties
+    assert.equal((pies as any).stock, undefined);
+
+    // 2. Change live seller stock in inventory
+    const cards = InventoryStore.getAgentCards();
+    const piesCard = cards.find((c) => c.agent_id === "agent:seller:razor_pies");
+    if (piesCard) {
+      piesCard.catalog.cheese.stock = 2; // Only 2 units left live
+      InventoryStore.saveAgentCard(piesCard);
+    }
+
+    // 3. When RFQ happens, orchestrator queries live stock at RFQ moment
+    const threadId = "test_live_stock_query_" + Date.now();
+    const result = await runNegotiation({
+      threadId,
+      scenario: "custom",
+      itemToProcure: "cheese",
+      quantityNeeded: 5,
+    });
+
+    const thread = ThreadStore.getThread(threadId);
+    const offerMsg = thread.find(
+      (m) => m.type === "OFFER" && (m.from.includes("razor_pies") || (m.payload as any)?.seller_id?.includes("razor_pies"))
+    );
+    // Live stock (2 units) was queried dynamically, capping offer to 2 units
+    assert.ok(offerMsg);
+    assert.equal((offerMsg.payload as any).quantity_kg, 2);
+    assert.equal((offerMsg.payload as any).stock_limited, true);
   });
 });

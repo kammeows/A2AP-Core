@@ -302,6 +302,49 @@ async function callGemini(
   return null;
 }
 
+/**
+ * Deterministically generates professional, business-grade seller rationale
+ * explaining why specific pricing, volume tiers, or stock constraints apply.
+ */
+export function generateSellerRationale(
+  sellerName: string,
+  item: string,
+  requestedQty: number,
+  offeredQty: number,
+  basePrice: number,
+  finalPrice: number,
+  discountPct: number,
+  stock: number,
+  reason: string,
+  targetPrice?: number
+): string {
+  if (offeredQty <= 0 || stock <= 0) {
+    return `${sellerName}: Zero inventory available for ${item} (0u in stock). Quote declined to prevent unfulfillable commitments.`;
+  }
+
+  const isStockLimited = offeredQty < requestedQty;
+  const isDiscounted = discountPct > 0;
+
+  if (isStockLimited) {
+    return `${sellerName}: Inventory constrained to ${offeredQty}u ${item} (requested ${requestedQty}u). Quoting partial fulfillment of all available ${offeredQty}u at ₹${finalPrice.toFixed(2)}/unit${isDiscounted ? ` with ${discountPct}% volume tier discount applied` : ` at base catalog rate`}.`;
+  }
+
+  if (isDiscounted) {
+    const savingsPerUnit = (basePrice - finalPrice).toFixed(2);
+    return `${sellerName}: Order of ${offeredQty}u ${item} qualifies for our ${discountPct}% volume discount tier (saving ₹${savingsPerUnit}/u off ₹${basePrice.toFixed(2)} list price, net ₹${finalPrice.toFixed(2)}/unit). Fully backed by ${stock}u on-hand inventory.`;
+  }
+
+  const norm = item.toLowerCase().trim().replace(/s$/, "");
+  const nextTier = norm === "flour" ? (sellerName.includes("RazorPies") ? 10 : 5) : norm === "cheese" ? 5 : norm === "tomato" || norm === "onion" ? 4 : 3;
+  const unitsNeededForTier = Math.max(1, nextTier - offeredQty);
+
+  if (targetPrice && targetPrice < basePrice) {
+    return `${sellerName}: Buyer requested target price ₹${targetPrice.toFixed(2)}/unit. Standard catalog rate of ₹${basePrice.toFixed(2)}/unit applies for ${offeredQty}u ${item}; increase order size by +${unitsNeededForTier}u (to ${nextTier}u) to unlock our wholesale volume tier.`;
+  }
+
+  return `${sellerName}: Standard catalog rate of ₹${basePrice.toFixed(2)}/unit applies for ${offeredQty}u ${item} (order size is below our ${nextTier}u wholesale volume tier threshold). Verified with ${stock}u warehouse stock.`;
+}
+
 export async function sellerRespondToRfq(
   rfq: RfqPayload,
   sellerId: string = "agent:seller:razor_pies",
@@ -346,7 +389,7 @@ export async function sellerRespondToRfq(
       total_price: 0,
       delivery_by: tomorrow,
       offer_expires: expiresAt,
-      rationale: `${sellerName} has 0 units of ${rfq.item} available in stock. Quote unavailable.`,
+      rationale: `${sellerName}: 0 units of ${rfq.item} available in stock. Quote unavailable.`,
     };
   }
 
@@ -367,6 +410,19 @@ export async function sellerRespondToRfq(
     };
   }
 
+  const calculatedRationale = generateSellerRationale(
+    sellerName,
+    offer.item,
+    rfq.quantity_kg,
+    offer.offeredQty,
+    state.basePrice,
+    offer.unitPrice,
+    offer.discountPct,
+    state.stock,
+    offer.reason,
+    rfq.target_price_per_unit
+  );
+
   return {
     seller_id: sellerId,
     item: offer.item,
@@ -379,16 +435,14 @@ export async function sellerRespondToRfq(
     total_price: offer.totalPrice,
     delivery_by: tomorrow,
     offer_expires: expiresAt,
-    rationale:
-      offer.offeredQty <= 0
-        ? `${sellerName} has 0 units of ${rfq.item} available in stock. Quote unavailable.`
-        : `${sellerName} offered ${offer.offeredQty}u ${offer.item} at ₹${offer.unitPrice}/unit (${offer.reason}, stock: ${state.stock}u).`,
+    rationale: calculatedRationale,
     upsell_item: upsell,
   };
 }
 
 export class SellerAgent {
   static respondToRfq = sellerRespondToRfq;
+  static generateSellerRationale = generateSellerRationale;
 }
 
 export default SellerAgent;

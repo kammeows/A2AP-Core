@@ -171,6 +171,13 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
   // Kitchen Order Agent Activity & Audit Log
   const [kitchenLogs, setKitchenLogs] = useState<KitchenLogEntry[]>([
     {
+      id: "log_discovery",
+      time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+      type: "info",
+      title: "Wholesale Price Sheets & Tiers Cached",
+      detail: "Discovered 3 suppliers (RazorPies, Razorcery-1, Razorcery-2). Cached published volume tiers & base rates; live stock is verified dynamically per RFQ.",
+    },
+    {
       id: "log_init",
       time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
       type: "info",

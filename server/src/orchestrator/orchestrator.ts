@@ -1,7 +1,7 @@
 import { appendMessage, getThread, db } from "../thread/threadStore.js";
 import { evaluateDeal } from "../policy/policyEngine.js";
 import { sellerRespondToRfq } from "../agents/sellerAgent.js";
-import { buyerEvaluateOffer } from "../agents/buyerAgent.js";
+import { buyerEvaluateOffer, BuyerCatalogService } from "../agents/buyerAgent.js";
 import {
   evaluateOfferAgainstCeiling,
   computeCounterQuantity,
@@ -247,38 +247,31 @@ export async function runNegotiation(
 
     const negotiationCeiling = getBuyerCeiling(item, policy.per_unit_price_ceiling[item]);
 
-    let matchingSellers: AgentCard[];
+    let matchingSellers: Array<{ agent_id: string; name: string; stocked_items: string[] }>;
     if (scenario === "happy" || scenario === "failure") {
       matchingSellers = [
         {
           agent_id: "agent:seller:veggie_vendor_09",
           name: "Veggie Vendor 09",
           stocked_items: ["tomato"],
-          catalog: { tomato: { base_price: 32, stock: 500 } },
-          negotiable: true,
-          description: "Wholesale produce vendor",
         },
       ];
       targetPricePerUnit = 28.0;
     } else {
-      const agentCards = InventoryStore.getAgentCards();
-      matchingSellers = agentCards.filter((card) =>
-        card.stocked_items.some(
-          (si) =>
-            si.toLowerCase().includes(item.toLowerCase()) ||
-            item.toLowerCase().includes(si.toLowerCase()) ||
-            si.toLowerCase().replace(/s$/, "") === norm
-        )
-      );
+      // Discover matching sellers from Buyer's cached catalog (base prices & discount tiers cached at session start)
+      const cachedMatching = BuyerCatalogService.getCachedSellersForItem(item);
+      matchingSellers = cachedMatching.map((c) => ({
+        agent_id: c.seller_id,
+        name: c.name,
+        stocked_items: c.stocked_items,
+      }));
+
       if (matchingSellers.length === 0) {
         matchingSellers = [
           {
             agent_id: "agent:seller:veggie_vendor_09",
             name: "Veggie Vendor 09",
             stocked_items: [item],
-            catalog: { [item]: { base_price: 32, stock: 500 } },
-            negotiable: true,
-            description: "Wholesale produce vendor",
           },
         ];
       }
