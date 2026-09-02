@@ -4,7 +4,7 @@ import { runNegotiation } from "../orchestrator/orchestrator.js";
 import { InventoryStore } from "../inventory/inventoryStore.js";
 import { buyerEvaluateOffer, BuyerCatalogService } from "./buyerAgent.js";
 import { sellerRespondToRfq } from "./sellerAgent.js";
-import { computeSellerOffer } from "./pricingEngine.js";
+import { computeSellerOffer, computeSellerQuote } from "./pricingEngine.js";
 import { ThreadStore } from "../thread/threadStore.js";
 import { seedDatabase } from "../db/seed.js";
 
@@ -462,5 +462,74 @@ describe("Multi-Seller Agent Network & Volume Negotiation", () => {
       offerPies.rationale.includes("Verified with 11u warehouse stock"),
       `Expected rationale to mention 11u warehouse stock, got: ${offerPies.rationale}`
     );
+  });
+
+  test("17. Seller quote captures buyer willingness-to-pay deterministically (Math.min(listPrice, Math.max(tierPrice, buyerAsk)))", async () => {
+    // 1. Pure function tests for computeSellerQuote
+    // List price: 6.00, Tier discount price: 5.40
+    // Case A: Buyer willing to pay 5.80 (> 5.40) -> seller charges 5.80 (captures surplus!)
+    assert.equal(computeSellerQuote(5.40, 5.80, 6.00), 5.80);
+
+    // Case B: Buyer asks 5.00 (< 5.40) -> seller holds at 5.40 volume tier floor
+    assert.equal(computeSellerQuote(5.40, 5.00, 6.00), 5.40);
+
+    // Case C: Buyer asks 7.00 (> 6.00) -> seller never gouges above 6.00 list price
+    assert.equal(computeSellerQuote(5.40, 7.00, 6.00), 6.00);
+
+    // Case D: No buyer ask (0 or undefined) -> seller offers 5.40 tier price
+    assert.equal(computeSellerQuote(5.40, 0, 6.00), 5.40);
+
+    // 2. End-to-end Seller Agent RFQ evaluation with willingness-to-pay
+    // Razorcery-1: Flour base price ₹6.00, 5u tier -> ₹5.40 (10% off)
+    InventoryStore.syncSellerInventories({
+      "agent:seller:razorcery_1": { flour: 20 },
+    });
+
+    // Buyer asks ₹5.80 for 7u flour (7u qualifies for 5u tier @ ₹5.40, but buyer is willing to pay ₹5.80)
+    const offerSurplus = await sellerRespondToRfq(
+      { item: "flour", quantity_kg: 7, target_price_per_unit: 5.80 },
+      "agent:seller:razorcery_1"
+    );
+    assert.equal(offerSurplus.final_price_per_kg, 5.80);
+    assert.equal(offerSurplus.total_price, 40.60); // 7 * 5.80
+
+    // Buyer asks ₹5.00 for 7u flour (below ₹5.40 tier floor) -> seller quotes ₹5.40
+    const offerFloor = await sellerRespondToRfq(
+      { item: "flour", quantity_kg: 7, target_price_per_unit: 5.00 },
+      "agent:seller:razorcery_1"
+    );
+    assert.equal(offerFloor.final_price_per_kg, 5.40);
+    assert.equal(offerFloor.total_price, 37.80); // 7 * 5.40
+  });
+
+  test("18. Tomato RFQ to Razorcery-1 and Razorcery-2 quotes at ₹4/₹3 list rates and never ₹32", async () => {
+    InventoryStore.syncSellerInventories({
+      "agent:seller:razorcery_1": { tomatoes: 15 },
+      "agent:seller:razorcery_2": { tomatoes: 15 },
+    });
+
+    // 1. RFQ for 7u tomatoes to Razorcery-1 (base price ₹4.00, 4u tier -> 10% off = ₹3.60)
+    // Target price is ₹2.70
+    const offerCery1 = await sellerRespondToRfq(
+      { item: "tomato", quantity_kg: 7, target_price_per_unit: 2.70 },
+      "agent:seller:razorcery_1"
+    );
+    assert.equal(offerCery1.base_price_per_kg, 4.00);
+    assert.equal(offerCery1.final_price_per_kg, 3.60);
+    assert.equal(offerCery1.discount_pct, 10);
+    assert.equal(offerCery1.total_price, 25.20); // 7 * 3.60
+    assert.ok(!offerCery1.rationale.includes("₹32"), "Must not cite ₹32 list price");
+
+    // 2. RFQ for 7u tomatoes to Razorcery-2 (base price ₹3.00, 4u tier -> 10% off = ₹2.70)
+    // Target price is ₹2.70
+    const offerCery2 = await sellerRespondToRfq(
+      { item: "tomatoes", quantity_kg: 7, target_price_per_unit: 2.70 },
+      "agent:seller:razorcery_2"
+    );
+    assert.equal(offerCery2.base_price_per_kg, 3.00);
+    assert.equal(offerCery2.final_price_per_kg, 2.70);
+    assert.equal(offerCery2.discount_pct, 10);
+    assert.equal(offerCery2.total_price, 18.90); // 7 * 2.70
+    assert.ok(!offerCery2.rationale.includes("₹32"), "Must not cite ₹32 list price");
   });
 });

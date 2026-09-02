@@ -417,22 +417,34 @@ export function updateStockAfterOrder(
  * Builds a deterministic SellerItemState for pricing calculations.
  */
 export function getSellerItemState(sellerId: string, itemName: string): SellerItemState | null {
-  let seller = getSellerCard(sellerId);
+  const canonicalId = normalizeSellerId(sellerId);
+  let seller = getSellerCard(canonicalId);
   const normalizedItem = normalizeIngredientKey(itemName);
 
-  if (normalizedItem === "tomato" && (!seller || !seller.catalog["tomato"])) {
+  if (!seller && (canonicalId === "agent:seller:veggie_vendor_09" || normalizedItem === "tomato")) {
     const veggieSeller = getSellerCard("agent:seller:veggie_vendor_09");
     if (veggieSeller) seller = veggieSeller;
   }
 
   if (!seller) return null;
 
-  const catalogKey =
-    Object.keys(seller.catalog).find(
-      (k) => k.toLowerCase() === itemName.toLowerCase() || normalizeIngredientKey(k) === normalizedItem
-    ) || itemName;
+  const catalogKey = Object.keys(seller.catalog).find(
+    (k) => k.toLowerCase() === itemName.toLowerCase() || normalizeIngredientKey(k) === normalizedItem
+  );
 
-  const catalogEntry = seller.catalog[catalogKey] || { base_price: 5, stock: 0 };
+  if (!catalogKey) {
+    return {
+      item: itemName,
+      stock: 0,
+      basePrice: 5,
+      tiers: [],
+      parLevel: 10,
+      overstockThresholdPct: 0.7,
+      pairedItem: undefined,
+    };
+  }
+
+  const catalogEntry = seller.catalog[catalogKey];
   const tierKey = seller.discount_tiers
     ? Object.keys(seller.discount_tiers).find(
         (k) => normalizeIngredientKey(k) === normalizedItem || k.toLowerCase() === itemName.toLowerCase()
@@ -446,7 +458,7 @@ export function getSellerItemState(sellerId: string, itemName: string): SellerIt
 
   const parLevel = (catalogEntry as any).par_level ?? Math.max(10, Math.round(catalogEntry.stock * 0.8));
   const overstockThresholdPct = 0.7;
-  const pairedItem = (catalogEntry as any).paired_item ?? (seller.agent_id === "agent:seller:razor_pies" && normalizedItem === "cheese" ? "milk" : undefined);
+  const pairedItem = (catalogEntry as any).paired_item ?? undefined;
 
   return {
     item: catalogKey,
@@ -499,7 +511,7 @@ export function computeSellerDiscount(
     };
   }
 
-  const offer = computeSellerOffer(state, quantityUnits);
+  const offer = computeSellerOffer(state, quantityUnits, targetPricePerUnit);
   const sellerFloors = sellerFloorPrices[sellerId] || {};
   const floorKey = Object.keys(sellerFloors).find(
     (k) => k.toLowerCase() === offer.item.toLowerCase() || k.toLowerCase().replace(/s$/, "") === offer.item.toLowerCase().replace(/s$/, "")

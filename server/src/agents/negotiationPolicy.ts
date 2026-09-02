@@ -77,7 +77,7 @@ export function getBuyerCeiling(item: string, customLimit?: number): number {
   if (norm === "flour") return 6.5;
   if (norm === "cheese") return 3.8;
   if (norm === "milk") return 8.8;
-  if (norm === "tomato") return item.toLowerCase() === "tomato" ? 30.0 : 3.2;
+  if (norm === "tomato") return customLimit && customLimit >= 30 ? 35.0 : 3.5;
   if (norm === "onion") return 3.8;
   return customLimit ?? 35;
 }
@@ -107,9 +107,7 @@ export function getBuyerTargetPrice(
   // - Flour: catalog base ₹6.00 / ₹8.00 -> target ₹5.00
   // - Onions: catalog base ₹4.00 -> target ₹3.20
   // - Milk: catalog base ₹9.00 -> target ₹7.50
-  if (norm === "tomato") {
-    return item.toLowerCase() === "tomato" ? 28.0 : 2.7;
-  }
+  if (norm === "tomato") return 2.7;
   if (norm === "cheese") return 3.2;
   if (norm === "flour") return 5.0;
   if (norm === "onion") return 3.2;

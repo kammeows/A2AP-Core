@@ -133,9 +133,11 @@ async function callGemini(
     },
   ];
 
+  const buyerAsk = rfq.target_price_per_unit;
   let lastComputedOffer: SellerOffer = computeSellerOffer(
     state,
     rfq.quantity_kg,
+    buyerAsk
   );
   let lastBundle: ReturnType<typeof checkBundleOpportunity> = null;
 
@@ -169,7 +171,7 @@ async function callGemini(
       });
     } else if (fnName === "compute_offer") {
       const q = Number(args.requested_qty) || rfq.quantity_kg;
-      lastComputedOffer = computeSellerOffer(state, q);
+      lastComputedOffer = computeSellerOffer(state, q, buyerAsk);
       functionResponses.push({
         functionResponse: {
           name: "compute_offer",
@@ -371,11 +373,17 @@ export function generateSellerRationale(
 
 export async function sellerRespondToRfq(
   rfq: RfqPayload,
-  sellerId: string = "agent:seller:razor_pies",
+  sellerId?: string,
 ): Promise<OfferPayload> {
   const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
   const expiresAt = new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString();
-  const canonicalSellerId = InventoryStore.normalizeSellerId(sellerId);
+
+  const isLegacyDemo =
+    !sellerId &&
+    normalizeIngredientKey(rfq.item) === "tomato" &&
+    (rfq.quantity_kg >= 30 || rfq.buyer_max_price_per_kg === 35);
+  const resolvedSellerId = sellerId || rfq.target_seller_id || (isLegacyDemo ? "agent:seller:veggie_vendor_09" : "agent:seller:razor_pies");
+  const canonicalSellerId = InventoryStore.normalizeSellerId(resolvedSellerId);
 
   if (process.env.NODE_ENV !== "test") {
     const geminiKeys = getGeminiKeys();
@@ -418,7 +426,8 @@ export async function sellerRespondToRfq(
     };
   }
 
-  const offer = computeSellerOffer(state, rfq.quantity_kg);
+  const buyerAsk = rfq.target_price_per_unit;
+  const offer = computeSellerOffer(state, rfq.quantity_kg, buyerAsk);
   const pairedState = state.pairedItem
     ? InventoryStore.getSellerItemState(canonicalSellerId, state.pairedItem) || undefined
     : undefined;

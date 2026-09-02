@@ -25,15 +25,31 @@ export interface SellerOffer {
 }
 
 /**
+ * Computes a revenue-maximizing quote that captures buyer willingness-to-pay
+ * without reflexively handing out maximum discounts when the buyer is willing to pay more,
+ * while still offering eligible volume tier rates and never exceeding list price.
+ */
+export function computeSellerQuote(
+  tierPrice: number,
+  buyerAsk: number,
+  listPrice: number
+): number {
+  if (!buyerAsk || buyerAsk <= 0) return tierPrice;
+  return Math.min(listPrice, Math.max(tierPrice, buyerAsk));
+}
+
+/**
  * The ONLY place a seller's price is computed. Called by the seller agent's
  * compute_offer tool -- the LLM never invents a number itself.
  * 
  * Hard-caps offeredQty to available stock to prevent stock hallucination (Bug 1).
  * Volume discount tiers genuinely move prices when quantity thresholds are reached (Bug 2).
+ * Captures buyer willingness-to-pay deterministically without reflexively over-discounting.
  */
 export function computeSellerOffer(
   state: SellerItemState,
-  requestedQty: number
+  requestedQty: number,
+  buyerAsk?: number
 ): SellerOffer {
   const offeredQty = Math.max(0, Math.min(requestedQty, state.stock)); // hard cap -- fixes bug 1
   const sortedTiers = [...state.tiers].sort((a, b) => a.minQty - b.minQty);
@@ -54,16 +70,20 @@ export function computeSellerOffer(
     reason = `below any volume tier, base price applies`;
   }
 
-  const unitPrice = Number((state.basePrice * (1 - discountPct / 100)).toFixed(2));
-  const totalPrice = Number((unitPrice * offeredQty).toFixed(2));
+  const rawTierPrice = Number((state.basePrice * (1 - discountPct / 100)).toFixed(2));
+  const finalUnitPrice = computeSellerQuote(rawTierPrice, buyerAsk ?? 0, state.basePrice);
+  const effectiveDiscountPct = state.basePrice > 0 
+    ? Number((((state.basePrice - finalUnitPrice) / state.basePrice) * 100).toFixed(1))
+    : 0;
+  const totalPrice = Number((finalUnitPrice * offeredQty).toFixed(2));
 
   return {
     item: state.item,
     requestedQty,
     offeredQty,
     stockLimited: offeredQty < requestedQty,
-    unitPrice,
-    discountPct,
+    unitPrice: finalUnitPrice,
+    discountPct: effectiveDiscountPct,
     totalPrice,
     reason,
   };
