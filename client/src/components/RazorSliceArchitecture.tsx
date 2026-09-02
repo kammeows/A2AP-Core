@@ -244,6 +244,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
   } | null>(null);
 
   const lastProcessedThreadRef = useRef<string | null>(null);
+  const processedTxKeysRef = useRef<Set<string>>(new Set<string>());
   const procurementInFlightRef = useRef<Set<string>>(new Set<string>());
   const simulationTickRef = useRef<number>(1);
   const inventoryEventsRef = useRef<
@@ -295,8 +296,17 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
   // Helper to apply confirmed purchases to Buyer Pantry and decrement Seller Inventories in real-time
   const applyPurchasedItems = (
     purchasedList: Array<{ seller_id: string; item: string; quantity: number }>,
+    txKey?: string,
   ) => {
     if (!purchasedList || purchasedList.length === 0) return;
+
+    if (txKey) {
+      if (processedTxKeysRef.current.has(txKey)) {
+        return; // Idempotent guard: already processed this exact transaction
+      }
+      processedTxKeysRef.current.add(txKey);
+      lastProcessedThreadRef.current = txKey;
+    }
 
     const itemSummaryList: Array<{
       item: string;
@@ -433,7 +443,10 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
         latestResult.status === "RENEGOTIATED_AND_CONFIRMED")
     ) {
       const eventKey = `${latestResult.thread_id || "direct"}_${latestResult.status}_${latestResult.order_id || ""}`;
-      if (lastProcessedThreadRef.current === eventKey) {
+      if (
+        processedTxKeysRef.current.has(eventKey) ||
+        lastProcessedThreadRef.current === eventKey
+      ) {
         return;
       }
       lastProcessedThreadRef.current = eventKey;
@@ -465,7 +478,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
       }
 
       if (purchasedList.length > 0) {
-        applyPurchasedItems(purchasedList);
+        applyPurchasedItems(purchasedList, eventKey);
       }
     }
   }, [latestResult]);
@@ -763,7 +776,8 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
             sellerInventories: currentSellerInventories,
           });
           if (res && res.purchased_items && res.purchased_items.length > 0) {
-            applyPurchasedItems(res.purchased_items);
+            const eventKey = `${res.thread_id || "direct"}_${res.status}_${res.order_id || ""}`;
+            applyPurchasedItems(res.purchased_items, eventKey);
           }
         } finally {
           proactiveReplenishment.forEach((i) =>
@@ -845,7 +859,8 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
           sellerInventories: currentSellerInventories,
         });
         if (res && res.purchased_items && res.purchased_items.length > 0) {
-          applyPurchasedItems(res.purchased_items);
+          const eventKey = `${res.thread_id || "direct"}_${res.status}_${res.order_id || ""}`;
+          applyPurchasedItems(res.purchased_items, eventKey);
         }
       } finally {
         itemsToProcure.forEach((i) =>
@@ -916,6 +931,10 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
   const applyPreset = (
     preset: "default" | "stocked" | "low_par" | "over_cap",
   ) => {
+    processedTxKeysRef.current.clear();
+    lastProcessedThreadRef.current = null;
+    procurementInFlightRef.current.clear();
+
     if (preset === "default") {
       sellerInventoriesRef.current = {
         "agent:seller:razor_pies": { cheese: 15, flour: 25, milk: 10 },
