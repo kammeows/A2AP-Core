@@ -38,18 +38,24 @@ export function computeSellerOffer(
   const offeredQty = Math.max(0, Math.min(requestedQty, state.stock)); // hard cap -- fixes bug 1
   const sortedTiers = [...state.tiers].sort((a, b) => a.minQty - b.minQty);
   const tier = [...sortedTiers].reverse().find((t) => offeredQty >= t.minQty);
-  const discountPct = tier?.discountPct ?? 0;
-  const unitPrice = Number((state.basePrice * (1 - discountPct / 100)).toFixed(2));
-  const totalPrice = Number((unitPrice * offeredQty).toFixed(2));
-
+  let discountPct = tier?.discountPct ?? 0;
   let reason = "";
+
   if (state.stock <= 0) {
     reason = `0 units available in stock, out of stock`;
   } else if (tier) {
     reason = `${offeredQty}u qualifies for the ${discountPct}% volume tier`;
+  } else if (state.stock >= 15 && offeredQty >= Math.max(4, Math.round(state.stock * 0.18))) {
+    // Dynamic stock-proportional inventory clearance discount:
+    // Seller has high surplus stock and buyer orders a sizable chunk
+    discountPct = 10;
+    reason = `${offeredQty}u order qualifies for 10% inventory clearance discount (${state.stock}u surplus stock on hand)`;
   } else {
     reason = `below any volume tier, base price applies`;
   }
+
+  const unitPrice = Number((state.basePrice * (1 - discountPct / 100)).toFixed(2));
+  const totalPrice = Number((unitPrice * offeredQty).toFixed(2));
 
   return {
     item: state.item,

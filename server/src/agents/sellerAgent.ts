@@ -213,6 +213,19 @@ async function callGemini(
         };
       }
 
+      const calculatedRationale = generateSellerRationale(
+        sellerCard ? sellerCard.name : sellerId,
+        lastComputedOffer.item,
+        rfq.quantity_kg,
+        fulfillableQty,
+        state.basePrice,
+        lastComputedOffer.unitPrice,
+        lastComputedOffer.discountPct,
+        state.stock,
+        lastComputedOffer.reason,
+        rfq.target_price_per_unit
+      );
+
       return {
         seller_id: sellerId,
         item: lastComputedOffer.item,
@@ -225,9 +238,7 @@ async function callGemini(
         total_price: lastComputedOffer.totalPrice,
         delivery_by: tomorrow,
         offer_expires: expiresAt,
-        rationale: off.rationale,
-        // ||
-        // `Offered ${fulfillableQty}u ${lastComputedOffer.item} at ₹${lastComputedOffer.unitPrice}/unit (${lastComputedOffer.reason}).`,
+        rationale: calculatedRationale,
         upsell_item: upsell,
       };
     }
@@ -280,6 +291,19 @@ async function callGemini(
         };
       }
 
+      const calculatedRationale = generateSellerRationale(
+        sellerCard ? sellerCard.name : sellerId,
+        lastComputedOffer.item,
+        rfq.quantity_kg,
+        fulfillableQty,
+        state.basePrice,
+        lastComputedOffer.unitPrice,
+        lastComputedOffer.discountPct,
+        state.stock,
+        lastComputedOffer.reason,
+        rfq.target_price_per_unit
+      );
+
       return {
         seller_id: sellerId,
         item: lastComputedOffer.item,
@@ -292,9 +316,7 @@ async function callGemini(
         total_price: lastComputedOffer.totalPrice,
         delivery_by: tomorrow,
         offer_expires: expiresAt,
-        rationale:
-          off.rationale ||
-          `Offered ${fulfillableQty}u ${lastComputedOffer.item} at ₹${lastComputedOffer.unitPrice}/unit (${lastComputedOffer.reason}).`,
+        rationale: calculatedRationale,
         upsell_item: upsell,
       };
     }
@@ -336,7 +358,8 @@ export function generateSellerRationale(
   }
 
   const norm = normalizeIngredientKey(item);
-  const nextTier = norm === "flour" ? (sellerName.includes("RazorPies") ? 10 : 5) : norm === "cheese" ? 5 : norm === "tomato" || norm === "onion" ? 4 : 3;
+  const isPies = sellerName.toLowerCase().includes("pies");
+  const nextTier = norm === "flour" ? (isPies ? 10 : 5) : norm === "cheese" ? 5 : norm === "tomato" || norm === "onion" ? 4 : 3;
   const unitsNeededForTier = Math.max(1, nextTier - offeredQty);
 
   if (targetPrice && targetPrice < basePrice) {
@@ -352,6 +375,7 @@ export async function sellerRespondToRfq(
 ): Promise<OfferPayload> {
   const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
   const expiresAt = new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString();
+  const canonicalSellerId = InventoryStore.normalizeSellerId(sellerId);
 
   if (process.env.NODE_ENV !== "test") {
     const geminiKeys = getGeminiKeys();
@@ -360,26 +384,26 @@ export async function sellerRespondToRfq(
         const offer = await callGemini(
           geminiKeys[i],
           rfq,
-          sellerId,
+          canonicalSellerId,
           tomorrow,
           expiresAt,
         );
         if (offer) return offer;
       } catch (err: any) {
         console.warn(
-          `[SellerAgent:${sellerId}] Gemini key #${i + 1} failed: ${err.message}`,
+          `[SellerAgent:${canonicalSellerId}] Gemini key #${i + 1} failed: ${err.message}`,
         );
       }
     }
   }
 
-  const sellerCard = InventoryStore.getSellerCard(sellerId);
-  const sellerName = sellerCard ? sellerCard.name : sellerId;
-  const state = InventoryStore.getSellerItemState(sellerId, rfq.item);
+  const sellerCard = InventoryStore.getSellerCard(canonicalSellerId);
+  const sellerName = sellerCard ? sellerCard.name : canonicalSellerId;
+  const state = InventoryStore.getSellerItemState(canonicalSellerId, rfq.item);
 
   if (!state || state.stock <= 0) {
     return {
-      seller_id: sellerId,
+      seller_id: canonicalSellerId,
       item: rfq.item,
       quantity_kg: 0,
       quality: rfq.quality_min || "Grade A",
@@ -396,7 +420,7 @@ export async function sellerRespondToRfq(
 
   const offer = computeSellerOffer(state, rfq.quantity_kg);
   const pairedState = state.pairedItem
-    ? InventoryStore.getSellerItemState(sellerId, state.pairedItem) || undefined
+    ? InventoryStore.getSellerItemState(canonicalSellerId, state.pairedItem) || undefined
     : undefined;
   const bundle = checkBundleOpportunity(state, pairedState);
 
@@ -425,7 +449,7 @@ export async function sellerRespondToRfq(
   );
 
   return {
-    seller_id: sellerId,
+    seller_id: canonicalSellerId,
     item: offer.item,
     quantity_kg: offer.offeredQty,
     quality: rfq.quality_min || "Grade A",

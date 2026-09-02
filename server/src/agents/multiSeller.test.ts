@@ -373,4 +373,94 @@ describe("Multi-Seller Agent Network & Volume Negotiation", () => {
       assert.equal(targetPrice, 2.7);
     }
   });
+
+  test("15. Seller current stock level is strictly synchronized with volume tier eligibility", async () => {
+    // 1. Sync live stock: RazorPies has 25 flour, Razorcery-1 has 20 flour
+    InventoryStore.syncSellerInventories({
+      "agent:seller:razor_pies": { flour: 25 },
+      "agent:seller:razorcery_1": { flour: 20 },
+    });
+
+    // 2. 5u RFQ to RazorPies (25u stock >= 5u tier threshold) -> 10% volume discount
+    const offerPies = await sellerRespondToRfq(
+      { item: "flour", quantity_kg: 5 },
+      "agent:seller:razor_pies"
+    );
+    assert.equal(offerPies.discount_pct, 10);
+    assert.equal(offerPies.final_price_per_kg, 7.2);
+    assert.equal(offerPies.quantity_kg, 5);
+
+    // 3. 5u RFQ to Razorcery-1 (20u stock >= 5u tier threshold) -> 10% volume discount
+    const offerCery1 = await sellerRespondToRfq(
+      { item: "flour", quantity_kg: 5 },
+      "agent:seller:razorcery_1"
+    );
+    assert.equal(offerCery1.discount_pct, 10);
+    assert.equal(offerCery1.final_price_per_kg, 5.4);
+    assert.equal(offerCery1.quantity_kg, 5);
+
+    // 4. If RazorPies stock drops to 3 units (below 5u tier threshold)
+    InventoryStore.syncSellerInventories({
+      "agent:seller:razor_pies": { flour: 3 },
+    });
+    const offerPiesDepleted = await sellerRespondToRfq(
+      { item: "flour", quantity_kg: 5 },
+      "agent:seller:razor_pies"
+    );
+    // Stock clamped to 3 units; since 3u < 5u tier minimum, discount is 0%
+    assert.equal(offerPiesDepleted.quantity_kg, 3);
+    assert.equal(offerPiesDepleted.discount_pct, 0);
+    assert.equal(offerPiesDepleted.final_price_per_kg, 8.0);
+  });
+
+  test("16. Depleted stock (e.g. 11 units) is correctly synchronized in seller reasoning and volume tiers", async () => {
+    // Sync Razorcery-1 flour to 11 units (depleted from 35)
+    InventoryStore.syncSellerInventories({
+      "agent:seller:razorcery_1": { flour: 11 },
+      "agent:seller:razor_pies": { flour: 11 },
+    });
+
+    // 1. Order of 7u flour to Razorcery-1 (qualifies for 5u tier -> 10% discount, within 11u stock)
+    const offerCery1 = await sellerRespondToRfq(
+      { item: "flour", quantity_kg: 7 },
+      "agent:seller:razorcery_1"
+    );
+    assert.equal(offerCery1.quantity_kg, 7);
+    assert.equal(offerCery1.discount_pct, 10);
+    assert.equal(offerCery1.final_price_per_kg, 5.4);
+    assert.equal(offerCery1.total_price, 37.8);
+    assert.ok(
+      offerCery1.rationale.includes("Fully backed by 11u on-hand inventory"),
+      `Expected rationale to mention 11u on-hand inventory, got: ${offerCery1.rationale}`
+    );
+    assert.ok(
+      !offerCery1.rationale.includes("25u"),
+      `Rationale must not contain stale 25u stock reference`
+    );
+
+    // 2. Order of 15u flour to Razorcery-1 (stock clamped to 11u)
+    const offerCery1Clamped = await sellerRespondToRfq(
+      { item: "flour", quantity_kg: 15 },
+      "agent:seller:razorcery_1"
+    );
+    assert.equal(offerCery1Clamped.quantity_kg, 11);
+    assert.equal(offerCery1Clamped.discount_pct, 10);
+    assert.ok(
+      offerCery1Clamped.rationale.includes("Inventory constrained to 11u flour"),
+      `Expected rationale to mention constraint to 11u, got: ${offerCery1Clamped.rationale}`
+    );
+
+    // 3. Order of 7u flour to RazorPies with 11u stock (below 10u volume tier and stock < 15u)
+    const offerPies = await sellerRespondToRfq(
+      { item: "flour", quantity_kg: 7 },
+      "agent:seller:razor_pies"
+    );
+    assert.equal(offerPies.quantity_kg, 7);
+    assert.equal(offerPies.discount_pct, 0);
+    assert.equal(offerPies.final_price_per_kg, 8.0);
+    assert.ok(
+      offerPies.rationale.includes("Verified with 11u warehouse stock"),
+      `Expected rationale to mention 11u warehouse stock, got: ${offerPies.rationale}`
+    );
+  });
 });

@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { AgentCard, InventoryItem } from "../types/domain.js";
 import { SellerItemState, DiscountTier, computeSellerOffer } from "../agents/pricingEngine.js";
+import { normalizeIngredientKey } from "../agents/negotiationPolicy.js";
 
 // Hard Floor Prices for Seller Agents (Never breached under any negotiation concession)
 export const sellerFloorPrices: Record<string, Record<string, number>> = {
@@ -239,12 +240,54 @@ export function saveAgentCard(card: AgentCard): void {
 }
 
 /**
+ * Normalizes any seller ID, name, or channel key to canonical agent_id.
+ */
+export function normalizeSellerId(sellerId: string): string {
+  const s = (sellerId || "").toLowerCase().trim();
+  if (s.includes("pies") || s.includes("razor_pies")) return "agent:seller:razor_pies";
+  if (
+    s.includes("razorcery_1") ||
+    s.includes("razorcery-1") ||
+    s.includes("razorcery 1") ||
+    s.includes("fresh") ||
+    s.includes("razorcery1")
+  ) {
+    return "agent:seller:razorcery_1";
+  }
+  if (
+    s.includes("razorcery_2") ||
+    s.includes("razorcery-2") ||
+    s.includes("razorcery 2") ||
+    s.includes("dairy") ||
+    s.includes("razorcery2")
+  ) {
+    return "agent:seller:razorcery_2";
+  }
+  if (s.includes("veggie") || s.includes("vendor_09") || s.includes("vendor")) {
+    return "agent:seller:veggie_vendor_09";
+  }
+  return s;
+}
+
+/**
  * Get a specific seller's Agent Card
  */
 export function getSellerCard(sellerId: string): AgentCard | null {
   const cards = getAgentCards();
-  const normalizedId = sellerId.toLowerCase().replace(/[^a-z0-9_:]/g, "");
-  return cards.find((c) => c.agent_id.toLowerCase().replace(/[^a-z0-9_:]/g, "") === normalizedId) || null;
+  const normalizedId = normalizeSellerId(sellerId);
+  const cleanId = sellerId.toLowerCase().replace(/[^a-z0-9]/g, "");
+  return (
+    cards.find((c) => {
+      const cNorm = normalizeSellerId(c.agent_id);
+      const cClean = c.agent_id.toLowerCase().replace(/[^a-z0-9]/g, "");
+      return (
+        cNorm === normalizedId ||
+        cClean === cleanId ||
+        c.agent_id.toLowerCase() === sellerId.toLowerCase() ||
+        c.name.toLowerCase() === sellerId.toLowerCase()
+      );
+    }) || null
+  );
 }
 
 /**
@@ -285,14 +328,23 @@ export function syncSellerInventories(
 ): void {
   const cards = getAgentCards();
   for (const [sellerId, items] of Object.entries(inventories)) {
-    const card = cards.find(
-      (c) => c.agent_id.toLowerCase().replace(/[^a-z0-9_:]/g, "") === sellerId.toLowerCase().replace(/[^a-z0-9_:]/g, "")
-    );
+    const normId = normalizeSellerId(sellerId);
+    const cleanId = sellerId.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const card = cards.find((c) => {
+      const cNorm = normalizeSellerId(c.agent_id);
+      const cClean = c.agent_id.toLowerCase().replace(/[^a-z0-9]/g, "");
+      return (
+        cNorm === normId ||
+        cClean === cleanId ||
+        c.agent_id.toLowerCase() === sellerId.toLowerCase() ||
+        c.name.toLowerCase() === sellerId.toLowerCase()
+      );
+    });
     if (card) {
       for (const [itemName, stock] of Object.entries(items)) {
-        const norm = itemName.toLowerCase().trim().replace(/s$/, "");
+        const norm = normalizeIngredientKey(itemName);
         const catKey = Object.keys(card.catalog).find(
-          (k) => k.toLowerCase() === itemName.toLowerCase() || k.toLowerCase().replace(/s$/, "") === norm
+          (k) => k.toLowerCase() === itemName.toLowerCase() || normalizeIngredientKey(k) === norm
         );
         if (catKey && card.catalog[catKey]) {
           card.catalog[catKey].stock = Math.max(0, Number(stock));
@@ -317,10 +369,10 @@ export function updateStockAfterOrder(
   const allCards = getAgentCards();
 
   for (const p of purchasedItems) {
-    const normItem = p.item.toLowerCase().trim();
+    const normItem = normalizeIngredientKey(p.item);
     // 1. Increase Buyer Stock
     const buyerKey = (Object.keys(buyerInv.inventory).find(
-      (k) => k.toLowerCase() === normItem || k.toLowerCase().replace(/s$/, "") === normItem.replace(/s$/, "")
+      (k) => k.toLowerCase() === p.item.toLowerCase() || normalizeIngredientKey(k) === normItem
     ) || "flour") as keyof typeof buyerInv.inventory;
 
     if (buyerKey && buyerInv.inventory[buyerKey] !== undefined) {
@@ -328,12 +380,21 @@ export function updateStockAfterOrder(
     }
 
     // 2. Decrease Seller Stock
-    const seller = allCards.find(
-      (c) => c.agent_id.toLowerCase().replace(/[^a-z0-9_:]/g, "") === p.seller_id.toLowerCase().replace(/[^a-z0-9_:]/g, "")
-    );
+    const normSeller = normalizeSellerId(p.seller_id);
+    const cleanSeller = p.seller_id.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const seller = allCards.find((c) => {
+      const cNorm = normalizeSellerId(c.agent_id);
+      const cClean = c.agent_id.toLowerCase().replace(/[^a-z0-9]/g, "");
+      return (
+        cNorm === normSeller ||
+        cClean === cleanSeller ||
+        c.agent_id.toLowerCase() === p.seller_id.toLowerCase() ||
+        c.name.toLowerCase() === p.seller_id.toLowerCase()
+      );
+    });
     if (seller) {
       const catKey = Object.keys(seller.catalog).find(
-        (k) => k.toLowerCase() === normItem || k.toLowerCase().replace(/s$/, "") === normItem.replace(/s$/, "")
+        (k) => k.toLowerCase() === p.item.toLowerCase() || normalizeIngredientKey(k) === normItem
       );
       if (catKey && seller.catalog[catKey]) {
         seller.catalog[catKey].stock = Math.max(0, seller.catalog[catKey].stock - p.quantity);
@@ -351,7 +412,7 @@ export function updateStockAfterOrder(
  */
 export function getSellerItemState(sellerId: string, itemName: string): SellerItemState | null {
   let seller = getSellerCard(sellerId);
-  const normalizedItem = itemName.toLowerCase().trim().replace(/s$/, "");
+  const normalizedItem = normalizeIngredientKey(itemName);
 
   if (normalizedItem === "tomato" && (!seller || !seller.catalog["tomato"])) {
     const veggieSeller = getSellerCard("agent:seller:veggie_vendor_09");
@@ -362,11 +423,16 @@ export function getSellerItemState(sellerId: string, itemName: string): SellerIt
 
   const catalogKey =
     Object.keys(seller.catalog).find(
-      (k) => k.toLowerCase() === itemName.toLowerCase() || k.toLowerCase().replace(/s$/, "") === normalizedItem
+      (k) => k.toLowerCase() === itemName.toLowerCase() || normalizeIngredientKey(k) === normalizedItem
     ) || itemName;
 
   const catalogEntry = seller.catalog[catalogKey] || { base_price: 5, stock: 0 };
-  const rawTiers = seller.discount_tiers?.[catalogKey] || [];
+  const tierKey = seller.discount_tiers
+    ? Object.keys(seller.discount_tiers).find(
+        (k) => normalizeIngredientKey(k) === normalizedItem || k.toLowerCase() === itemName.toLowerCase()
+      )
+    : undefined;
+  const rawTiers = (tierKey && seller.discount_tiers?.[tierKey]) ? seller.discount_tiers[tierKey] : [];
   const tiers: DiscountTier[] = rawTiers.map((t) => ({
     minQty: t.min_quantity,
     discountPct: t.discount_pct,
@@ -541,6 +607,7 @@ export function computeDiscount(
 }
 
 export class InventoryStore {
+  static normalizeSellerId = normalizeSellerId;
   static getAgentCards = getAgentCards;
   static getSellerCard = getSellerCard;
   static saveAgentCard = saveAgentCard;

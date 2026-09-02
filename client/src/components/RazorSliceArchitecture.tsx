@@ -213,6 +213,11 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
   const procurementInFlightRef = useRef<Set<string>>(new Set<string>());
   const simulationTickRef = useRef<number>(1);
   const inventoryEventsRef = useRef<Array<{ item: string; tick: number; quantityUsed: number }>>([]);
+  const sellerInventoriesRef = useRef<Record<string, Record<string, number>>>({
+    "agent:seller:razor_pies": { cheese: 15, flour: 25, milk: 10 },
+    "agent:seller:razorcery_1": { flour: 35, tomatoes: 15, onions: 15 },
+    "agent:seller:razorcery_2": { milk: 15, tomatoes: 15, onions: 15 },
+  });
 
   const normalizeKey = (name: string): keyof BuyerPantry => {
     const s = (name || "").toLowerCase().trim();
@@ -222,6 +227,150 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
     if (s.startsWith("tomat")) return "tomatoes";
     if (s.startsWith("onion")) return "onions";
     return s as keyof BuyerPantry;
+  };
+
+  // Helper to build real-time synced seller inventories object
+  const getLiveSellerInventories = (): Record<string, Record<string, number>> => ({
+    "agent:seller:razor_pies": {
+      cheese: razorPies.cheese.stock,
+      flour: razorPies.flour.stock,
+      milk: razorPies.milk.stock,
+    },
+    "agent:seller:razorcery_1": {
+      flour: razorcery1.flour.stock,
+      tomatoes: razorcery1.tomatoes.stock,
+      onions: razorcery1.onions.stock,
+    },
+    "agent:seller:razorcery_2": {
+      milk: razorcery2.milk.stock,
+      tomatoes: razorcery2.tomatoes.stock,
+      onions: razorcery2.onions.stock,
+    },
+  });
+
+  // Keep sellerInventoriesRef continuously synchronized with React state
+  useEffect(() => {
+    sellerInventoriesRef.current = getLiveSellerInventories();
+  }, [razorPies, razorcery1, razorcery2]);
+
+  // Helper to apply confirmed purchases to Buyer Pantry and decrement Seller Inventories in real-time
+  const applyPurchasedItems = (
+    purchasedList: Array<{ seller_id: string; item: string; quantity: number }>
+  ) => {
+    if (!purchasedList || purchasedList.length === 0) return;
+
+    const itemSummaryList: Array<{ item: string; quantity: number; seller: string }> = [];
+
+    // 1. Increment Buyer Pantry Stock
+    setBuyerStock((prev) => {
+      const next = { ...prev };
+      for (const p of purchasedList) {
+        const pantryKey = normalizeKey(p.item);
+        if (pantryKey in next && typeof next[pantryKey] === "number") {
+          next[pantryKey] = (next[pantryKey] as number) + p.quantity;
+        }
+      }
+      return next;
+    });
+
+    // 2. Decrement Seller Stock in real-time (synchronously in ref and asynchronously in React state)
+    for (const p of purchasedList) {
+      const norm = normalizeKey(p.item);
+      const sid = (p.seller_id || "").toLowerCase();
+
+      let matchedSellerName = "Wholesale Grocery";
+      const isPies = sid.includes("pies") || sid.includes("razor_pies");
+      const isCery1 =
+        sid.includes("razorcery_1") ||
+        sid.includes("razorcery-1") ||
+        sid.includes("razorcery 1") ||
+        sid.includes("razorcery fresh") ||
+        sid.includes("razorcery1");
+      const isCery2 =
+        sid.includes("razorcery_2") ||
+        sid.includes("razorcery-2") ||
+        sid.includes("razorcery 2") ||
+        sid.includes("razorcery dairy") ||
+        sid.includes("razorcery2");
+
+      let sellerKey = "agent:seller:razor_pies";
+      if (isCery1) {
+        sellerKey = "agent:seller:razorcery_1";
+        matchedSellerName = "Razorcery-1";
+      } else if (isCery2) {
+        sellerKey = "agent:seller:razorcery_2";
+        matchedSellerName = "Razorcery-2";
+      } else if (isPies) {
+        sellerKey = "agent:seller:razor_pies";
+        matchedSellerName = "RazorPies";
+      }
+
+      // Synchronously update ref
+      if (sellerInventoriesRef.current[sellerKey]) {
+        const itemKey = Object.keys(sellerInventoriesRef.current[sellerKey]).find(
+          (k) => normalizeKey(k) === norm
+        );
+        if (itemKey) {
+          sellerInventoriesRef.current[sellerKey][itemKey] = Math.max(
+            0,
+            sellerInventoriesRef.current[sellerKey][itemKey] - p.quantity
+          );
+        }
+      }
+
+      if (isPies) {
+        setRazorPies((prev) => {
+          const k = Object.keys(prev).find((key) => normalizeKey(key) === norm);
+          if (k && prev[k]) {
+            return {
+              ...prev,
+              [k]: { ...prev[k], stock: Math.max(0, prev[k].stock - p.quantity) },
+            };
+          }
+          return prev;
+        });
+      } else if (isCery1) {
+        setRazorcery1((prev) => {
+          const k = Object.keys(prev).find((key) => normalizeKey(key) === norm);
+          if (k && prev[k]) {
+            return {
+              ...prev,
+              [k]: { ...prev[k], stock: Math.max(0, prev[k].stock - p.quantity) },
+            };
+          }
+          return prev;
+        });
+      } else if (isCery2) {
+        setRazorcery2((prev) => {
+          const k = Object.keys(prev).find((key) => normalizeKey(key) === norm);
+          if (k && prev[k]) {
+            return {
+              ...prev,
+              [k]: { ...prev[k], stock: Math.max(0, prev[k].stock - p.quantity) },
+            };
+          }
+          return prev;
+        });
+      }
+
+      itemSummaryList.push({
+        item: p.item,
+        quantity: p.quantity,
+        seller: matchedSellerName,
+      });
+    }
+
+    const bannerText = `Payment Confirmed! Restocked ${purchasedList.map((p) => `+${p.quantity} ${p.item}`).join(", ")}`;
+    setRestockNotification({
+      text: bannerText,
+      items: itemSummaryList,
+    });
+
+    addLog(
+      "restocked",
+      `🚚 Kitchen Restocked Successfully`,
+      `Received from sellers: ${purchasedList.map((p) => `+${p.quantity}u ${p.item}`).join(", ")}`
+    );
   };
 
   // Sync confirmed transactions from A2A Multi-Seller network
@@ -255,113 +404,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
       }
 
       if (purchasedList.length > 0) {
-        const itemSummaryList: Array<{ item: string; quantity: number; seller: string }> = [];
-
-        // 1. Increment Buyer Pantry Stock
-        setBuyerStock((prev) => {
-          const next = { ...prev };
-          for (const p of purchasedList) {
-            const pantryKey = normalizeKey(p.item);
-            if (pantryKey in next && typeof next[pantryKey] === "number") {
-              next[pantryKey] = (next[pantryKey] as number) + p.quantity;
-            }
-          }
-          return next;
-        });
-
-        // 2. Decrement Seller Stock
-        for (const p of purchasedList) {
-          const norm = normalizeKey(p.item);
-          const sid = (p.seller_id || "").toLowerCase();
-
-          let matchedSellerName = "Wholesale Grocery";
-          const isPies = sid.includes("pies") || sid.includes("razor_pies") || norm === "cheese";
-          const isCery1 = sid.includes("razorcery_1") || sid.includes("fresh #1") || (norm === "flour" && !sid.includes("pies")) || (norm === "onions" && !sid.includes("razorcery_2"));
-          const isCery2 = sid.includes("razorcery_2") || sid.includes("dairy & veg #2") || (norm === "tomatoes" && !sid.includes("razorcery_1"));
-
-          if (isPies && !sid.includes("razorcery_1") && !sid.includes("razorcery_2")) {
-            matchedSellerName = "RazorPies";
-            setRazorPies((prev) => {
-              const k = Object.keys(prev).find((key) => normalizeKey(key) === norm);
-              if (k && prev[k]) {
-                return {
-                  ...prev,
-                  [k]: { ...prev[k], stock: Math.max(0, prev[k].stock - p.quantity) },
-                };
-              }
-              return prev;
-            });
-          } else if (isCery1 && !sid.includes("razorcery_2")) {
-            matchedSellerName = "Razorcery-1";
-            setRazorcery1((prev) => {
-              const k = Object.keys(prev).find((key) => normalizeKey(key) === norm);
-              if (k && prev[k]) {
-                return {
-                  ...prev,
-                  [k]: { ...prev[k], stock: Math.max(0, prev[k].stock - p.quantity) },
-                };
-              }
-              return prev;
-            });
-          } else if (isCery2) {
-            matchedSellerName = "Razorcery-2";
-            setRazorcery2((prev) => {
-              const k = Object.keys(prev).find((key) => normalizeKey(key) === norm);
-              if (k && prev[k]) {
-                return {
-                  ...prev,
-                  [k]: { ...prev[k], stock: Math.max(0, prev[k].stock - p.quantity) },
-                };
-              }
-              return prev;
-            });
-          } else {
-            matchedSellerName = "Razorcery-1 & RazorPies";
-            setRazorcery1((prev) => {
-              const k = Object.keys(prev).find((key) => normalizeKey(key) === norm);
-              if (k && prev[k] && prev[k].stock > 0) {
-                return {
-                  ...prev,
-                  [k]: { ...prev[k], stock: Math.max(0, prev[k].stock - p.quantity) },
-                };
-              }
-              return prev;
-            });
-            setRazorPies((prev) => {
-              const k = Object.keys(prev).find((key) => normalizeKey(key) === norm);
-              if (k && prev[k] && prev[k].stock > 0) {
-                return {
-                  ...prev,
-                  [k]: { ...prev[k], stock: Math.max(0, prev[k].stock - p.quantity) },
-                };
-              }
-              return prev;
-            });
-          }
-
-          itemSummaryList.push({
-            item: p.item,
-            quantity: p.quantity,
-            seller: matchedSellerName,
-          });
-        }
-
-        const bannerText = `Payment Confirmed! Restocked ${purchasedList.map((p) => `+${p.quantity} ${p.item}`).join(", ")}`;
-        setRestockNotification({
-          text: bannerText,
-          items: itemSummaryList,
-        });
-
-        addLog(
-          "restocked",
-          `Restocked from A2A Groceries`,
-          `Procured: ${purchasedList.map((p) => `${p.quantity}u ${p.item}`).join(", ")} | Groceries stock decremented | Total Paid: ₹${latestResult.total_amount || 0}`
-        );
-
-        const timer = setTimeout(() => {
-          setRestockNotification(null);
-        }, 6000);
-        return () => clearTimeout(timer);
+        applyPurchasedItems(purchasedList);
       }
     }
   }, [latestResult]);
@@ -495,32 +538,22 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
           currentOrder.id
         );
 
-        const currentSellerInventories = {
-          "agent:seller:razor_pies": {
-            cheese: razorPies.cheese.stock,
-            flour: razorPies.flour.stock,
-            milk: razorPies.milk.stock,
-          },
-          "agent:seller:razorcery_1": {
-            flour: razorcery1.flour.stock,
-            tomatoes: razorcery1.tomatoes.stock,
-            onions: razorcery1.onions.stock,
-          },
-          "agent:seller:razorcery_2": {
-            milk: razorcery2.milk.stock,
-            tomatoes: razorcery2.tomatoes.stock,
-            onions: razorcery2.onions.stock,
-          },
-        };
+        const currentSellerInventories = JSON.parse(JSON.stringify(sellerInventoriesRef.current));
 
         try {
-          await onRunAi("custom", {
+          const res = await onRunAi("custom", {
             itemsToProcure: proactiveReplenishment,
             buyerStockKg: updatedStock.flour,
-            sellerStockKg: razorPies.cheese.stock + razorcery1.flour.stock + razorcery2.milk.stock,
+            sellerStockKg:
+              sellerInventoriesRef.current["agent:seller:razor_pies"].cheese +
+              sellerInventoriesRef.current["agent:seller:razorcery_1"].flour +
+              sellerInventoriesRef.current["agent:seller:razorcery_2"].milk,
             buyerTargetStockKg: 30,
             sellerInventories: currentSellerInventories,
           });
+          if (res && res.purchased_items && res.purchased_items.length > 0) {
+            applyPurchasedItems(res.purchased_items);
+          }
         } finally {
           proactiveReplenishment.forEach((i) => procurementInFlightRef.current.delete(i.item));
         }
@@ -581,33 +614,23 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
         currentOrder.id
       );
 
-      const currentSellerInventories = {
-        "agent:seller:razor_pies": {
-          cheese: razorPies.cheese.stock,
-          flour: razorPies.flour.stock,
-          milk: razorPies.milk.stock,
-        },
-        "agent:seller:razorcery_1": {
-          flour: razorcery1.flour.stock,
-          tomatoes: razorcery1.tomatoes.stock,
-          onions: razorcery1.onions.stock,
-        },
-        "agent:seller:razorcery_2": {
-          milk: razorcery2.milk.stock,
-          tomatoes: razorcery2.tomatoes.stock,
-          onions: razorcery2.onions.stock,
-        },
-      };
+      const currentSellerInventories = JSON.parse(JSON.stringify(sellerInventoriesRef.current));
 
       let res: NegotiationResult | null = null;
       try {
         res = await onRunAi("custom", {
           itemsToProcure,
           buyerStockKg: buyerStock.flour,
-          sellerStockKg: razorPies.cheese.stock + razorcery1.flour.stock + razorcery2.milk.stock,
+          sellerStockKg:
+            sellerInventoriesRef.current["agent:seller:razor_pies"].cheese +
+            sellerInventoriesRef.current["agent:seller:razorcery_1"].flour +
+            sellerInventoriesRef.current["agent:seller:razorcery_2"].milk,
           buyerTargetStockKg: 30,
           sellerInventories: currentSellerInventories,
         });
+        if (res && res.purchased_items && res.purchased_items.length > 0) {
+          applyPurchasedItems(res.purchased_items);
+        }
       } finally {
         itemsToProcure.forEach((i) => procurementInFlightRef.current.delete(i.item));
       }
@@ -665,6 +688,11 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
 
   const applyPreset = (preset: "default" | "stocked" | "low_par" | "over_cap") => {
     if (preset === "default") {
+      sellerInventoriesRef.current = {
+        "agent:seller:razor_pies": { cheese: 15, flour: 25, milk: 10 },
+        "agent:seller:razorcery_1": { flour: 35, tomatoes: 15, onions: 15 },
+        "agent:seller:razorcery_2": { milk: 15, tomatoes: 15, onions: 15 },
+      };
       setBuyerStock({ cheese: 5, flour: 30, tomatoes: 6, onions: 5, milk: 7, targetStock: 30 });
       setRazorPies({
         cheese: { stock: 15, price: 4 },
@@ -685,14 +713,61 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
       setCompletedOrders([]);
       addLog("info", "Reset to Default Setup", "Pantry restored to Par Stock (Flour: 30, Cheese: 5, Tomatoes: 6, Onions: 5, Milk: 7).");
     } else if (preset === "stocked") {
+      sellerInventoriesRef.current = {
+        "agent:seller:razor_pies": { cheese: 25, flour: 40, milk: 20 },
+        "agent:seller:razorcery_1": { flour: 45, tomatoes: 25, onions: 25 },
+        "agent:seller:razorcery_2": { milk: 25, tomatoes: 25, onions: 25 },
+      };
+      setRazorPies({
+        cheese: { stock: 25, price: 4 },
+        flour: { stock: 40, price: 8 },
+        milk: { stock: 20, price: 9 },
+      });
+      setRazorcery1({
+        flour: { stock: 45, price: 6 },
+        tomatoes: { stock: 25, price: 4 },
+        onions: { stock: 25, price: 4 },
+      });
+      setRazorcery2({
+        milk: { stock: 25, price: 10 },
+        tomatoes: { stock: 25, price: 3 },
+        onions: { stock: 25, price: 5 },
+      });
       setBuyerStock({ cheese: 15, flour: 50, tomatoes: 20, onions: 15, milk: 20, targetStock: 30 });
-      addLog("info", "Surplus Stock Preset", "Pantry filled with high surplus stock.");
+      addLog("info", "Surplus Stock Preset", "Pantry and seller warehouses filled with high surplus stock.");
     } else if (preset === "low_par") {
+      sellerInventoriesRef.current = {
+        "agent:seller:razor_pies": { cheese: 15, flour: 25, milk: 10 },
+        "agent:seller:razorcery_1": { flour: 35, tomatoes: 15, onions: 15 },
+        "agent:seller:razorcery_2": { milk: 15, tomatoes: 15, onions: 15 },
+      };
+      setRazorPies({
+        cheese: { stock: 15, price: 4 },
+        flour: { stock: 25, price: 8 },
+        milk: { stock: 10, price: 9 },
+      });
+      setRazorcery1({
+        flour: { stock: 35, price: 6 },
+        tomatoes: { stock: 15, price: 4 },
+        onions: { stock: 15, price: 4 },
+      });
+      setRazorcery2({
+        milk: { stock: 15, price: 10 },
+        tomatoes: { stock: 15, price: 3 },
+        onions: { stock: 15, price: 5 },
+      });
       setBuyerStock({ cheese: 3, flour: 20, tomatoes: 4, onions: 3, milk: 4, targetStock: 30 });
       addLog("par_trigger", "Low Par Stock Preset", "All items set below par stock (Flour: 20/30, Cheese: 3/5, Tomatoes: 4/5, Onions: 3/5, Milk: 4/5) to demonstrate min-max target reordering.");
     } else if (preset === "over_cap") {
+      sellerInventoriesRef.current = {
+        "agent:seller:razor_pies": { cheese: 50, flour: 50, milk: 50 },
+        "agent:seller:razorcery_1": { flour: 50, tomatoes: 50, onions: 50 },
+        "agent:seller:razorcery_2": { milk: 50, tomatoes: 50, onions: 50 },
+      };
       setBuyerStock({ cheese: 0, flour: 0, tomatoes: 0, onions: 0, milk: 0, targetStock: 50 });
       setRazorPies({ cheese: { stock: 50, price: 40 }, flour: { stock: 50, price: 50 }, milk: { stock: 50, price: 50 } });
+      setRazorcery1({ flour: { stock: 50, price: 50 }, tomatoes: { stock: 50, price: 50 }, onions: { stock: 50, price: 50 } });
+      setRazorcery2({ milk: { stock: 50, price: 50 }, tomatoes: { stock: 50, price: 50 }, onions: { stock: 50, price: 50 } });
       addLog("info", "Breach Cap Demo", "Pantry empty and seller prices set high to demonstrate bounded policy engine caps.");
     }
   };
@@ -726,20 +801,38 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
   ) => {
     if (isRunning) return;
     if (seller === "razorPies") {
-      setRazorPies((prev) => ({
-        ...prev,
-        [item]: { ...prev[item], stock: Math.max(0, prev[item].stock + delta) },
-      }));
+      setRazorPies((prev) => {
+        const nextStock = Math.max(0, prev[item].stock + delta);
+        if (sellerInventoriesRef.current["agent:seller:razor_pies"]) {
+          sellerInventoriesRef.current["agent:seller:razor_pies"][item] = nextStock;
+        }
+        return {
+          ...prev,
+          [item]: { ...prev[item], stock: nextStock },
+        };
+      });
     } else if (seller === "razorcery1") {
-      setRazorcery1((prev) => ({
-        ...prev,
-        [item]: { ...prev[item], stock: Math.max(0, prev[item].stock + delta) },
-      }));
+      setRazorcery1((prev) => {
+        const nextStock = Math.max(0, prev[item].stock + delta);
+        if (sellerInventoriesRef.current["agent:seller:razorcery_1"]) {
+          sellerInventoriesRef.current["agent:seller:razorcery_1"][item] = nextStock;
+        }
+        return {
+          ...prev,
+          [item]: { ...prev[item], stock: nextStock },
+        };
+      });
     } else if (seller === "razorcery2") {
-      setRazorcery2((prev) => ({
-        ...prev,
-        [item]: { ...prev[item], stock: Math.max(0, prev[item].stock + delta) },
-      }));
+      setRazorcery2((prev) => {
+        const nextStock = Math.max(0, prev[item].stock + delta);
+        if (sellerInventoriesRef.current["agent:seller:razorcery_2"]) {
+          sellerInventoriesRef.current["agent:seller:razorcery_2"][item] = nextStock;
+        }
+        return {
+          ...prev,
+          [item]: { ...prev[item], stock: nextStock },
+        };
+      });
     }
   };
 

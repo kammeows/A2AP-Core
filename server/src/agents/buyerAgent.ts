@@ -536,10 +536,18 @@ export class BuyerCatalogService {
     item: string
   ): { min_quantity: number; discount_pct: number }[] {
     const catalogs = BuyerCatalogService.getCachedCatalogs();
-    const normalizedSeller = sellerId.toLowerCase().replace(/[^a-z0-9_:]/g, "");
-    const seller = catalogs.find(
-      (c) => c.seller_id.toLowerCase().replace(/[^a-z0-9_:]/g, "") === normalizedSeller
-    );
+    const normalizedSeller = InventoryStore.normalizeSellerId(sellerId);
+    const cleanSeller = sellerId.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const seller = catalogs.find((c) => {
+      const cNorm = InventoryStore.normalizeSellerId(c.seller_id);
+      const cClean = c.seller_id.toLowerCase().replace(/[^a-z0-9]/g, "");
+      return (
+        cNorm === normalizedSeller ||
+        cClean === cleanSeller ||
+        c.seller_id.toLowerCase() === sellerId.toLowerCase() ||
+        c.name.toLowerCase() === sellerId.toLowerCase()
+      );
+    });
     if (!seller || !seller.discount_tiers) return [];
 
     const norm = normalizeIngredientKey(item);
