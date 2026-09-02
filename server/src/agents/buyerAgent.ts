@@ -18,6 +18,17 @@ import {
   getBuyerCeiling,
   defaultBuyerNegotiationPolicy,
 } from "./negotiationPolicy.js";
+import {
+  ProcurementOption,
+  LivePantryState,
+  computeProcurementOptions,
+  validateReasoningNumbers,
+} from "./procurementOptions.js";
+import {
+  DeferredDecisionStore,
+  checkDeferredDecisions,
+  DeferredDecision,
+} from "../procurement/deferredDecisions.js";
 
 try {
   const __filename = fileURLToPath(import.meta.url);
@@ -577,6 +588,153 @@ export async function buyerEvaluateOffer(
   return evaluateOffersDeterministically(offersToCompare, neededItem, neededQuantity, profile);
 }
 
+export function chooseProcurementOptionDeterministically(
+  options: ProcurementOption[]
+): { chosen_option: ProcurementOption; reasoning: string } {
+  if (options.length === 0) {
+    throw new Error("Cannot choose from empty procurement options");
+  }
+
+  // 1. Look for a bulk tier option with significant discount (e.g. >= 10%)
+  const tierOption = options.find(
+    (o) => o.option_id.startsWith("buy_to_tier") && (o.discount_pct || 0) >= 10
+  );
+  if (tierOption) {
+    const savings = tierOption.reasoning_facts.unit_savings_vs_minimal;
+    return {
+      chosen_option: tierOption,
+      reasoning: `Selected ${tierOption.option_id} (${tierOption.quantity}u at ₹${tierOption.unit_price}/unit): unlocks ${tierOption.discount_pct}% volume discount tier, saving ₹${savings}/unit over minimal restock while staying within target bounds.`,
+    };
+  }
+
+  // 2. If wait is available and consumption rate is very low, prefer deferring
+  const waitOption = options.find((o) => o.option_id === "wait");
+  const consumptionRate = Number(waitOption?.reasoning_facts.consumption_rate || 0);
+  if (waitOption && consumptionRate <= 0.3) {
+    return {
+      chosen_option: waitOption,
+      reasoning: `Selected wait: low consumption rate (${consumptionRate}u/tick) projects ${waitOption.reasoning_facts.projected_stock_in_n_ticks}u remaining in ${waitOption.reasoning_facts.safe_wait_ticks} ticks, safely above ${waitOption.reasoning_facts.safety_floor}u floor.`,
+    };
+  }
+
+  // 3. Default to minimal restock
+  const minimalOption = options.find((o) => o.option_id === "buy_minimal") || options[0];
+  return {
+    chosen_option: minimalOption,
+    reasoning: `Selected buy_minimal: ordering ${minimalOption.quantity}u ${minimalOption.item} to restore stock from ${minimalOption.reasoning_facts.current_stock}u to ${minimalOption.reasoning_facts.target_stock}u target at ₹${minimalOption.unit_price}/unit.`,
+  };
+}
+
+export async function chooseProcurementOption(
+  item: string,
+  live: LivePantryState,
+  profile?: RestaurantProfile
+): Promise<{
+  chosen_option: ProcurementOption;
+  reasoning: string;
+  all_options: ProcurementOption[];
+  is_flagged: boolean;
+  unexplained_numbers: number[];
+}> {
+  const options = computeProcurementOptions(item, live);
+
+  if (process.env.NODE_ENV !== "test") {
+    const geminiKeys = getGeminiKeys();
+    const tools = [
+      {
+        functionDeclarations: [
+          {
+            name: "choose_procurement_option",
+            description:
+              "Select optimal procurement path from locked enum. Cite ONLY values present in reasoning_facts.",
+            parameters: {
+              type: "OBJECT",
+              properties: {
+                option_id: {
+                  type: "STRING",
+                  enum: options.map((o) => o.option_id),
+                },
+                reasoning: {
+                  type: "STRING",
+                  description:
+                    "Plain-language explanation for audit trail. MUST cite ONLY values from reasoning_facts.",
+                },
+              },
+              required: ["option_id", "reasoning"],
+            },
+          },
+        ],
+      },
+    ];
+
+    const contents = [
+      {
+        role: "user",
+        parts: [
+          {
+            text: `You are the RazorSlice procurement strategist. Evaluate the pre-computed deterministic options for "${item}":\n\nOptions & Ground-Truth Facts:\n${JSON.stringify(
+              options,
+              null,
+              2
+            )}\n\nCall \`choose_procurement_option\` with your selected option_id and reasoning. You MUST cite ONLY facts provided in reasoning_facts.`,
+          },
+        ],
+      },
+    ];
+
+    for (let i = 0; i < geminiKeys.length; i++) {
+      try {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKeys[i]}`;
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ contents, tools }),
+          signal: AbortSignal.timeout(3500),
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          const call = data.candidates?.[0]?.content?.parts?.find(
+            (p: any) => p.functionCall?.name === "choose_procurement_option"
+          );
+
+          if (call) {
+            const selectedId = call.functionCall.args?.option_id;
+            const reasoning = call.functionCall.args?.reasoning || "";
+            const chosen = options.find((o) => o.option_id === selectedId) || options[0];
+
+            const validation = validateReasoningNumbers(reasoning, chosen.reasoning_facts);
+
+            return {
+              chosen_option: chosen,
+              reasoning,
+              all_options: options,
+              is_flagged: !validation.isValid,
+              unexplained_numbers: validation.unexplained,
+            };
+          }
+        }
+      } catch (err: any) {
+        console.warn(`[BuyerAgent:Options] Gemini key #${i + 1} attempt failed: ${err.message}`);
+      }
+    }
+  }
+
+  const fallback = chooseProcurementOptionDeterministically(options);
+  const validation = validateReasoningNumbers(
+    fallback.reasoning,
+    fallback.chosen_option.reasoning_facts
+  );
+
+  return {
+    chosen_option: fallback.chosen_option,
+    reasoning: fallback.reasoning,
+    all_options: options,
+    is_flagged: !validation.isValid,
+    unexplained_numbers: validation.unexplained,
+  };
+}
+
 export class BuyerAgent {
   static evaluateOffer = buyerEvaluateOffer;
   static evaluateOffersDeterministically = evaluateOffersDeterministically;
@@ -585,6 +743,12 @@ export class BuyerAgent {
   static getCachedSellersForItem = BuyerCatalogService.getCachedSellersForItem;
   static getTierStructure = BuyerCatalogService.getTierStructure;
   static clearCache = BuyerCatalogService.clearCache;
+  static computeProcurementOptions = computeProcurementOptions;
+  static chooseProcurementOption = chooseProcurementOption;
+  static chooseProcurementOptionDeterministically = chooseProcurementOptionDeterministically;
+  static validateReasoningNumbers = validateReasoningNumbers;
+  static DeferredDecisions = DeferredDecisionStore;
+  static checkDeferredDecisions = checkDeferredDecisions;
 }
 
 export default BuyerAgent;

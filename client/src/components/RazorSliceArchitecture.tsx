@@ -211,6 +211,8 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
 
   const lastProcessedThreadRef = useRef<string | null>(null);
   const procurementInFlightRef = useRef<Set<string>>(new Set<string>());
+  const simulationTickRef = useRef<number>(1);
+  const inventoryEventsRef = useRef<Array<{ item: string; tick: number; quantityUsed: number }>>([]);
 
   const normalizeKey = (name: string): keyof BuyerPantry => {
     const s = (name || "").toLowerCase().trim();
@@ -442,10 +444,15 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
     if (canBakeImmediately) {
       await new Promise((r) => setTimeout(r, 550));
 
+      simulationTickRef.current += 1;
+      const currentTick = simulationTickRef.current;
+
       const updatedStock = { ...buyerStock };
       (Object.keys(currentOrder.recipe) as Array<keyof BuyerPantry>).forEach((k) => {
         if (k !== "targetStock" && currentOrder.recipe[k]) {
-          updatedStock[k] = Math.max(0, (updatedStock[k] as number) - (currentOrder.recipe[k] as number));
+          const used = currentOrder.recipe[k] as number;
+          updatedStock[k] = Math.max(0, (updatedStock[k] as number) - used);
+          inventoryEventsRef.current.push({ item: k, tick: currentTick, quantityUsed: used });
         }
       });
       setBuyerStock(updatedStock);
