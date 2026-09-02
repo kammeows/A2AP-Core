@@ -604,7 +604,17 @@ export function chooseProcurementOptionDeterministically(
     throw new Error("Cannot choose from empty procurement options");
   }
 
-  // 1. Look for a bulk tier option with significant discount (e.g. >= 10%)
+  // 1. If wait is available and consumption rate is very low (<= 0.3u/tick), prefer deferring
+  const waitOption = options.find((o) => o.option_id === "wait");
+  const consumptionRate = Number(waitOption?.reasoning_facts.consumption_rate || 0);
+  if (waitOption && consumptionRate <= 0.3) {
+    return {
+      chosen_option: waitOption,
+      reasoning: `Selected wait: low consumption rate (${consumptionRate}u/tick) projects ${waitOption.reasoning_facts.projected_stock_in_n_ticks}u remaining in ${waitOption.reasoning_facts.safe_wait_ticks} ticks, safely above ${waitOption.reasoning_facts.safety_floor}u floor.`,
+    };
+  }
+
+  // 2. Look for a bulk tier option with significant discount (e.g. >= 10%)
   const tierOption = options.find(
     (o) => o.option_id.startsWith("buy_to_tier") && (o.discount_pct || 0) >= 10
   );
@@ -613,16 +623,6 @@ export function chooseProcurementOptionDeterministically(
     return {
       chosen_option: tierOption,
       reasoning: `Selected ${tierOption.option_id} (${tierOption.quantity}u at ₹${tierOption.unit_price}/unit): unlocks ${tierOption.discount_pct}% volume discount tier, saving ₹${savings}/unit over minimal restock while staying within target bounds.`,
-    };
-  }
-
-  // 2. If wait is available and consumption rate is very low, prefer deferring
-  const waitOption = options.find((o) => o.option_id === "wait");
-  const consumptionRate = Number(waitOption?.reasoning_facts.consumption_rate || 0);
-  if (waitOption && consumptionRate <= 0.3) {
-    return {
-      chosen_option: waitOption,
-      reasoning: `Selected wait: low consumption rate (${consumptionRate}u/tick) projects ${waitOption.reasoning_facts.projected_stock_in_n_ticks}u remaining in ${waitOption.reasoning_facts.safe_wait_ticks} ticks, safely above ${waitOption.reasoning_facts.safety_floor}u floor.`,
     };
   }
 

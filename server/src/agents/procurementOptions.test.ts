@@ -223,4 +223,36 @@ describe("Procurement Options, Look-Ahead & Fact Verification (options-tools.md)
     assert.equal(result.chosen_option.quantity, 20);
     assert.ok(result.reasoning.includes("buy_to_tier_20"));
   });
+
+  test("8. Target stock sized for order-cycle buffer (40u flour, 8-9u others) generates optimal wait and buy_to_tier paths", () => {
+    // Flour pantry: 25u on hand, target 40u, par 30u, safety floor 10u, burn rate 5u/order
+    const liveFlour: LivePantryState = {
+      currentTick: 2,
+      stock: { flour: 25 },
+      target: { flour: 40 },
+      safetyFloor: { flour: 10 },
+      recentEvents: [{ item: "flour", tick: 1, quantityUsed: 5 }],
+    };
+
+    const flourOptions = computeProcurementOptions("flour", liveFlour);
+    const flourChoice = chooseProcurementOptionDeterministically(flourOptions);
+    // Minimal is 15u (reaches 10u/12u tier), so it buys to replenish the multi-cycle target buffer
+    assert.ok(flourChoice.chosen_option);
+    assert.ok(flourChoice.chosen_option.quantity >= 15);
+
+    // Tomatoes pantry: 4u on hand, target 8u, par 5u, safety floor 2u, burn rate 0.2u/tick
+    const liveTomatoes: LivePantryState = {
+      currentTick: 5,
+      stock: { tomatoes: 4 },
+      target: { tomatoes: 8 },
+      safetyFloor: { tomatoes: 2 },
+      recentEvents: [{ item: "tomatoes", tick: 4, quantityUsed: 1 }],
+    };
+
+    const tomatoOptions = computeProcurementOptions("tomatoes", liveTomatoes);
+    const waitOption = tomatoOptions.find((o) => o.option_id === "wait");
+    assert.ok(waitOption, "Tomatoes with 4u on hand (>2u floor) and low consumption must generate WAIT option");
+    const tomatoChoice = chooseProcurementOptionDeterministically(tomatoOptions);
+    assert.equal(tomatoChoice.chosen_option.option_id, "wait");
+  });
 });

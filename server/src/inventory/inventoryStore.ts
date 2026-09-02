@@ -132,14 +132,14 @@ export const defaultAgentCards: AgentCard[] = [
   },
 ];
 
-// Default Buyer Inventory for RazorSlice (Par stock: Flour: 30, others: 5)
+// Default Buyer Inventory for RazorSlice (Par stock: Flour: 30, others: 5; Target stock sized for order buffer cycles)
 export const defaultBuyerInventory = {
   restaurant_id: "agent:buyer:razorslice",
   inventory: {
-    cheese: 5,
+    cheese: 6,
     flour: 30,
     tomatoes: 6,
-    onions: 5,
+    onions: 6,
     milk: 7,
   },
   par_stock: {
@@ -149,7 +149,13 @@ export const defaultBuyerInventory = {
     onions: 5,
     milk: 5,
   },
-  target_stock: 30,
+  target_stock: {
+    flour: 40,
+    cheese: 8,
+    tomatoes: 8,
+    onions: 8,
+    milk: 9,
+  },
 };
 
 export const defaultInventory = {
