@@ -48,6 +48,8 @@ export interface OfferPayload {
   rationale?: string;
   narrative?: string;
   upsell_item?: UpsellItem;
+  stock_limited?: boolean;
+  stockLimited?: boolean;
 }
 
 export interface SplitAcceptItem {

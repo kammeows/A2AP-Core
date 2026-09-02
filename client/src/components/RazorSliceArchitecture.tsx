@@ -479,11 +479,30 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
           currentOrder.id
         );
 
+        const currentSellerInventories = {
+          "agent:seller:razor_pies": {
+            cheese: razorPies.cheese.stock,
+            flour: razorPies.flour.stock,
+            milk: razorPies.milk.stock,
+          },
+          "agent:seller:razorcery_1": {
+            flour: razorcery1.flour.stock,
+            tomatoes: razorcery1.tomatoes.stock,
+            onions: razorcery1.onions.stock,
+          },
+          "agent:seller:razorcery_2": {
+            milk: razorcery2.milk.stock,
+            tomatoes: razorcery2.tomatoes.stock,
+            onions: razorcery2.onions.stock,
+          },
+        };
+
         await onRunAi("custom", {
           itemsToProcure: proactiveReplenishment,
           buyerStockKg: updatedStock.flour,
           sellerStockKg: razorPies.cheese.stock + razorcery1.flour.stock + razorcery2.milk.stock,
           buyerTargetStockKg: 30,
+          sellerInventories: currentSellerInventories,
         });
       }
 
@@ -514,11 +533,30 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
         currentOrder.id
       );
 
+      const currentSellerInventories = {
+        "agent:seller:razor_pies": {
+          cheese: razorPies.cheese.stock,
+          flour: razorPies.flour.stock,
+          milk: razorPies.milk.stock,
+        },
+        "agent:seller:razorcery_1": {
+          flour: razorcery1.flour.stock,
+          tomatoes: razorcery1.tomatoes.stock,
+          onions: razorcery1.onions.stock,
+        },
+        "agent:seller:razorcery_2": {
+          milk: razorcery2.milk.stock,
+          tomatoes: razorcery2.tomatoes.stock,
+          onions: razorcery2.onions.stock,
+        },
+      };
+
       const res = await onRunAi("custom", {
         itemsToProcure,
         buyerStockKg: buyerStock.flour,
         sellerStockKg: razorPies.cheese.stock + razorcery1.flour.stock + razorcery2.milk.stock,
         buyerTargetStockKg: 30,
+        sellerInventories: currentSellerInventories,
       });
 
       if (res && res.status === "CONFIRMED") {

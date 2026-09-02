@@ -4,10 +4,11 @@ import { runNegotiation } from "../orchestrator/orchestrator.js";
 import { InventoryStore } from "../inventory/inventoryStore.js";
 import { buyerEvaluateOffer } from "./buyerAgent.js";
 import { sellerRespondToRfq } from "./sellerAgent.js";
+import { computeSellerOffer } from "./pricingEngine.js";
 import { ThreadStore } from "../thread/threadStore.js";
 import { seedDatabase } from "../db/seed.js";
 
-describe("Multi-Seller Agent Network & Split-Order Optimization", () => {
+describe("Multi-Seller Agent Network & Volume Negotiation", () => {
   beforeEach(() => {
     ThreadStore.clearAll();
     seedDatabase();
@@ -29,7 +30,7 @@ describe("Multi-Seller Agent Network & Split-Order Optimization", () => {
     assert.deepEqual(cery2?.stocked_items, ["milk", "tomatoes", "onions"]);
   });
 
-  test("2. Seller agents calculate real-time pricing, stock, and volume tiers via get_stock", async () => {
+  test("2. Seller agents calculate real-time pricing, stock, and volume tiers deterministically", async () => {
     // RazorPies cheese RFQ (>= 5 units -> 10% discount from base ₹4 -> ₹3.60)
     const offerPies = await sellerRespondToRfq(
       { item: "cheese", quantity_kg: 6 },
@@ -41,7 +42,6 @@ describe("Multi-Seller Agent Network & Split-Order Optimization", () => {
     assert.equal(offerPies.discount_pct, 10);
     assert.equal(offerPies.final_price_per_kg, 3.6);
     assert.equal(offerPies.total_price, 21.6);
-    assert.ok(offerPies.rationale?.includes("RazorPies Wholesale"));
 
     // Razorcery-1 flour RFQ (>= 5 units -> 10% discount from base ₹6 -> ₹5.40)
     const offerCery1 = await sellerRespondToRfq(
@@ -177,20 +177,22 @@ describe("Multi-Seller Agent Network & Split-Order Optimization", () => {
     assert.ok(cheeseRfqs.length > 0);
   });
 
-  test("7. Seller concedes partway toward target price but strictly enforces code floor price", async () => {
-    // RazorPies cheese base is ₹4, floor price is ₹3.20
-    const offerNormal = await sellerRespondToRfq(
-      { item: "cheese", quantity_kg: 5, target_price_per_unit: 3.2 },
+  test("7. Volume-for-price dynamic: Buyer counter crosses volume tier and genuinely moves unit price", async () => {
+    // Flour at RazorPies has tiers: >=10u -> 10% (₹7.20), >=20u -> 27.5% (₹5.80)
+    const offer15 = await sellerRespondToRfq(
+      { item: "flour", quantity_kg: 15 },
       "agent:seller:razor_pies"
     );
-    assert.ok(offerNormal.final_price_per_kg >= 3.2);
+    assert.equal(offer15.final_price_per_kg, 7.2);
+    assert.equal(offer15.discount_pct, 10);
 
-    // If buyer asks for ₹1.00 (below floor), seller never breaches ₹3.20
-    const offerExtreme = await sellerRespondToRfq(
-      { item: "cheese", quantity_kg: 5, target_price_per_unit: 1.0 },
+    // When buyer increases volume to 21 units, price genuinely moves down to ₹5.80
+    const offer21 = await sellerRespondToRfq(
+      { item: "flour", quantity_kg: 21 },
       "agent:seller:razor_pies"
     );
-    assert.equal(offerExtreme.final_price_per_kg, 3.2);
+    assert.equal(offer21.final_price_per_kg, 5.8);
+    assert.equal(offer21.discount_pct, 27.5);
   });
 
   test("8. Orchestrator enforces max 2-round negotiation limit and logs ROUND_CAP_REACHED", async () => {
@@ -198,8 +200,8 @@ describe("Multi-Seller Agent Network & Split-Order Optimization", () => {
     const result = await runNegotiation({
       threadId,
       scenario: "custom",
-      itemToProcure: "cheese",
-      quantityNeeded: 6,
+      itemToProcure: "flour",
+      quantityNeeded: 15,
     });
 
     assert.equal(result.status, "CONFIRMED");
@@ -207,5 +209,79 @@ describe("Multi-Seller Agent Network & Split-Order Optimization", () => {
     const roundCapMsg = thread.find((m) => m.type === "ROUND_CAP_REACHED");
     assert.ok(roundCapMsg);
     assert.equal(roundCapMsg.payload.narrative, "round_cap_reached: buyer proceeding with best available offer");
+  });
+
+  test("9. Seller never offers stock it does not have and strictly clamps to available stock (Bug 1 Fix)", async () => {
+    const sellerCard = InventoryStore.getSellerCard("agent:seller:razor_pies");
+    const cheeseStock = sellerCard?.catalog["cheese"]?.stock ?? 15;
+
+    // Request 50 units when seller only has 15 units
+    const offer = await sellerRespondToRfq(
+      { item: "cheese", quantity_kg: 50 },
+      "agent:seller:razor_pies"
+    );
+
+    assert.ok(offer.quantity_kg <= cheeseStock, `Offered quantity (${offer.quantity_kg}) must not exceed stock (${cheeseStock})`);
+    assert.equal(offer.total_price, Number((offer.final_price_per_kg * offer.quantity_kg).toFixed(2)));
+  });
+
+  test("10. Hard code check in Orchestrator logs REJECT and never logs OFFER when seller is out of stock", async () => {
+    const threadId = "test_stock_reject_" + Date.now();
+    
+    // Set RazorPies milk stock to 0 in database
+    const card = InventoryStore.getSellerCard("agent:seller:razor_pies");
+    if (card && card.catalog["milk"]) {
+      card.catalog["milk"].stock = 0;
+      InventoryStore.saveAgentCard(card);
+    }
+
+    const result = await runNegotiation({
+      threadId,
+      scenario: "custom",
+      itemToProcure: "milk",
+      quantityNeeded: 5,
+    });
+
+    const thread = ThreadStore.getThread(threadId);
+    const razorPiesOffers = thread.filter(
+      (m) => m.type === "OFFER" && (m.from.includes("razor_pies") || (m.payload as any)?.seller_id?.includes("razor_pies"))
+    );
+    // RazorPies had 0 milk stock, so it must NEVER have an OFFER logged!
+    assert.equal(razorPiesOffers.length, 0);
+
+    const rejects = thread.filter(
+      (m) => m.type === "REJECT" && m.from.includes("razor_pies")
+    );
+    assert.ok(rejects.length > 0, "Out-of-stock seller must have REJECT logged");
+  });
+
+  test("11. Seller offers available partial stock (4 units) when buyer demands 5 units and buyer accepts", async () => {
+    const threadId = "test_partial_stock_" + Date.now();
+
+    // RazorPies has 4 cheese units, buyer needs 5 units
+    const result = await runNegotiation({
+      threadId,
+      scenario: "custom",
+      itemToProcure: "cheese",
+      quantityNeeded: 5,
+      sellerInventories: {
+        "agent:seller:razor_pies": { cheese: 4 },
+      },
+    });
+
+    assert.equal(result.status, "CONFIRMED");
+    const thread = ThreadStore.getThread(threadId);
+
+    // Must have an OFFER for 4 units (NOT a reject!)
+    const offerMsg = thread.find(
+      (m) => m.type === "OFFER" && (m.from.includes("razor_pies") || (m.payload as any)?.seller_id?.includes("razor_pies"))
+    );
+    assert.ok(offerMsg, "Seller with 4 units must produce an OFFER for 4 units, not reject");
+    assert.equal((offerMsg.payload as any).quantity_kg, 4);
+    assert.equal((offerMsg.payload as any).stock_limited, true);
+
+    // Final order confirmed for 4 units
+    const confirmMsg = thread.find((m) => m.type === "ORDER_CONFIRM");
+    assert.ok(confirmMsg);
   });
 });

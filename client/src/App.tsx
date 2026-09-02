@@ -102,6 +102,7 @@ export const App: React.FC = () => {
         quantityNeeded: customOptions?.quantityNeeded,
         itemsToProcure: customOptions?.itemsToProcure,
         customRfq: customOptions?.customRfq,
+        sellerInventories: customOptions?.sellerInventories,
       });
 
       setLatestResult(result);

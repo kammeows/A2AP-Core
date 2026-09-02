@@ -3,6 +3,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { RfqPayload, OfferPayload, UpsellItem } from "../types/domain.js";
 import { InventoryStore } from "../inventory/inventoryStore.js";
+import {
+  computeSellerOffer,
+  checkBundleOpportunity,
+  SellerOffer,
+} from "./pricingEngine.js";
 import { SELLER_SYSTEM_PROMPT } from "./prompts.js";
 
 try {
@@ -16,15 +21,15 @@ dotenv.config();
 
 function getGeminiKeys(): string[] {
   const raw = process.env.GEMINI_API_KEY || "";
-  const directKeys = raw.split(",").map((k) => k.trim()).filter((k) => k.length > 10);
-  if (process.env.GEMINI_API_KEY_1) directKeys.push(process.env.GEMINI_API_KEY_1.trim());
-  if (process.env.GEMINI_API_KEY_2) directKeys.push(process.env.GEMINI_API_KEY_2.trim());
+  const directKeys = raw
+    .split(",")
+    .map((k) => k.trim())
+    .filter((k) => k.length > 10);
+  if (process.env.GEMINI_API_KEY_1)
+    directKeys.push(process.env.GEMINI_API_KEY_1.trim());
+  if (process.env.GEMINI_API_KEY_2)
+    directKeys.push(process.env.GEMINI_API_KEY_2.trim());
   return Array.from(new Set(directKeys));
-}
-
-function getGroqKey(): string | null {
-  const k = process.env.GROQ_API_KEY?.trim();
-  return k && k.length > 10 ? k : null;
 }
 
 async function callGemini(
@@ -32,42 +37,67 @@ async function callGemini(
   rfq: RfqPayload,
   sellerId: string,
   tomorrow: string,
-  expiresAt: string
+  expiresAt: string,
 ): Promise<OfferPayload | null> {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
   const sellerCard = InventoryStore.getSellerCard(sellerId);
   const catalogContext = sellerCard ? JSON.stringify(sellerCard) : "{}";
+  const state = InventoryStore.getSellerItemState(sellerId, rfq.item);
+
+  if (!state || state.stock <= 0) {
+    return null; // Out of stock -- don't produce an offer
+  }
 
   const tools = [
     {
       functionDeclarations: [
         {
           name: "get_stock",
-          description: "Check current available stock and volume discount tiers for a seller's item.",
+          description: "Check current available stock for a seller's item.",
           parameters: {
             type: "OBJECT",
             properties: {
-              seller_id: { type: "STRING" },
               item: { type: "STRING" },
-              quantity: { type: "NUMBER" },
             },
-            required: ["seller_id", "item", "quantity"],
+            required: ["item"],
+          },
+        },
+        {
+          name: "compute_offer",
+          description:
+            "Compute the deterministic wholesale offer (price, volume tier discount, stock clamping).",
+          parameters: {
+            type: "OBJECT",
+            properties: {
+              item: { type: "STRING" },
+              requested_qty: { type: "NUMBER" },
+            },
+            required: ["item", "requested_qty"],
+          },
+        },
+        {
+          name: "check_bundle_opportunity",
+          description:
+            "Check if an overstocked pairing exists to offer as a bundle add-on.",
+          parameters: {
+            type: "OBJECT",
+            properties: {
+              item: { type: "STRING" },
+            },
+            required: ["item"],
           },
         },
         {
           name: "make_offer",
-          description: "Submit an official wholesale quote with explainable rationale and optional bundle upsell.",
+          description:
+            "Submit official wholesale offer using EXACT tool numbers.",
           parameters: {
             type: "OBJECT",
             properties: {
-              seller_id: { type: "STRING" },
               item: { type: "STRING" },
               quantity: { type: "NUMBER" },
-              quality: { type: "STRING" },
-              base_price: { type: "NUMBER" },
+              unit_price: { type: "NUMBER" },
               discount_pct: { type: "NUMBER" },
-              discount_reason: { type: "STRING" },
-              final_price: { type: "NUMBER" },
               total_price: { type: "NUMBER" },
               rationale: { type: "STRING" },
               upsell_item_name: { type: "STRING" },
@@ -76,25 +106,37 @@ async function callGemini(
               upsell_discount_pct: { type: "NUMBER" },
               upsell_reason: { type: "STRING" },
             },
-            required: ["item", "quantity", "final_price", "total_price", "rationale"],
+            required: [
+              "item",
+              "quantity",
+              "unit_price",
+              "total_price",
+              "rationale",
+            ],
           },
         },
       ],
     },
   ];
 
-  const contents = [
+  const contents: any[] = [
     {
       role: "user",
       parts: [
         {
-          text: `${SELLER_SYSTEM_PROMPT}\n\nYou represent Seller ID: "${sellerId}". Your Catalog: ${catalogContext}.\n\nReceived RFQ: ${JSON.stringify(
-            rfq
-          )}.\nCall \`get_stock\` to check stock & pricing, then call \`make_offer\` with an explainable rationale.`,
+          text: `${SELLER_SYSTEM_PROMPT}\n\nYou represent Seller ID: "${sellerId}". Catalog: ${catalogContext}.\n\nReceived Purchase Request: ${JSON.stringify(
+            rfq,
+          )}.\nCall \`get_stock\` and \`compute_offer\` to compute the exact offer, then respond via \`make_offer\` with an explainable rationale.`,
         },
       ],
     },
   ];
+
+  let lastComputedOffer: SellerOffer = computeSellerOffer(
+    state,
+    rfq.quantity_kg,
+  );
+  let lastBundle: ReturnType<typeof checkBundleOpportunity> = null;
 
   const res1 = await fetch(url, {
     method: "POST",
@@ -106,30 +148,95 @@ async function callGemini(
   if (!res1.ok) return null;
   const data1 = await res1.json();
   const candidate = data1.candidates?.[0];
-  const functionCalls = candidate?.content?.parts?.filter((p: any) => p.functionCall);
+  const functionCalls = candidate?.content?.parts?.filter(
+    (p: any) => p.functionCall,
+  );
 
   if (!functionCalls || functionCalls.length === 0) return null;
 
-  const stockCall = functionCalls.find((p: any) => p.functionCall.name === "get_stock");
-  if (stockCall) {
-    const args = stockCall.functionCall.args || {};
-    const pricing = InventoryStore.computeSellerDiscount(
-      args.seller_id || sellerId,
-      args.item || rfq.item,
-      Number(args.quantity) || rfq.quantity_kg
-    );
+  const functionResponses: any[] = [];
+  for (const call of functionCalls) {
+    const fnName = call.functionCall.name;
+    const args = call.functionCall.args || {};
 
+    if (fnName === "get_stock") {
+      functionResponses.push({
+        functionResponse: {
+          name: "get_stock",
+          response: { stock: state.stock, item: state.item },
+        },
+      });
+    } else if (fnName === "compute_offer") {
+      const q = Number(args.requested_qty) || rfq.quantity_kg;
+      lastComputedOffer = computeSellerOffer(state, q);
+      functionResponses.push({
+        functionResponse: {
+          name: "compute_offer",
+          response: { output: lastComputedOffer },
+        },
+      });
+    } else if (fnName === "check_bundle_opportunity") {
+      const pairedState = state.pairedItem
+        ? InventoryStore.getSellerItemState(sellerId, state.pairedItem) ||
+          undefined
+        : undefined;
+      lastBundle = checkBundleOpportunity(state, pairedState);
+      functionResponses.push({
+        functionResponse: {
+          name: "check_bundle_opportunity",
+          response: { output: lastBundle },
+        },
+      });
+    } else if (fnName === "make_offer") {
+      // Gemini called make_offer directly
+      const off = args;
+      const fulfillableQty = lastComputedOffer.offeredQty;
+      if (fulfillableQty <= 0) return null;
+
+      let upsell: UpsellItem | undefined;
+      if (off.upsell_item_name && off.upsell_price) {
+        upsell = {
+          item: off.upsell_item_name,
+          quantity_kg: Number(off.upsell_quantity) || 2,
+          unit_price: Number(off.upsell_price),
+          discount_pct: Number(off.upsell_discount_pct) || 10,
+          reason: off.upsell_reason || "Surplus bundle discount",
+        };
+      } else if (lastBundle) {
+        upsell = {
+          item: lastBundle.pairedItem,
+          quantity_kg: lastBundle.quantity,
+          unit_price: lastBundle.unitPrice,
+          discount_pct: lastBundle.discountPct,
+          reason: lastBundle.reason,
+        };
+      }
+
+      return {
+        seller_id: sellerId,
+        item: lastComputedOffer.item,
+        quantity_kg: fulfillableQty,
+        quality: rfq.quality_min || "Grade A",
+        base_price_per_kg: state.basePrice,
+        discount_pct: lastComputedOffer.discountPct,
+        discount_reason: lastComputedOffer.reason,
+        final_price_per_kg: lastComputedOffer.unitPrice,
+        total_price: lastComputedOffer.totalPrice,
+        delivery_by: tomorrow,
+        offer_expires: expiresAt,
+        rationale: off.rationale,
+        // ||
+        // `Offered ${fulfillableQty}u ${lastComputedOffer.item} at ₹${lastComputedOffer.unitPrice}/unit (${lastComputedOffer.reason}).`,
+        upsell_item: upsell,
+      };
+    }
+  }
+
+  if (functionResponses.length > 0) {
     contents.push(candidate.content);
     contents.push({
       role: "function",
-      parts: [
-        {
-          functionResponse: {
-            name: "get_stock",
-            response: { output: pricing },
-          },
-        },
-      ],
+      parts: functionResponses,
     });
 
     const res2 = await fetch(url, {
@@ -141,11 +248,18 @@ async function callGemini(
 
     if (!res2.ok) return null;
     const data2 = await res2.json();
-    const secondCalls = data2.candidates?.[0]?.content?.parts?.filter((p: any) => p.functionCall);
-    const offerCall = secondCalls?.find((p: any) => p.functionCall.name === "make_offer");
+    const secondCalls = data2.candidates?.[0]?.content?.parts?.filter(
+      (p: any) => p.functionCall,
+    );
+    const offerCall = secondCalls?.find(
+      (p: any) => p.functionCall.name === "make_offer",
+    );
 
     if (offerCall) {
       const off = offerCall.functionCall.args;
+      const fulfillableQty = lastComputedOffer.offeredQty;
+      if (fulfillableQty <= 0) return null;
+
       let upsell: UpsellItem | undefined;
       if (off.upsell_item_name && off.upsell_price) {
         upsell = {
@@ -155,23 +269,31 @@ async function callGemini(
           discount_pct: Number(off.upsell_discount_pct) || 10,
           reason: off.upsell_reason || "Surplus bundle discount",
         };
+      } else if (lastBundle) {
+        upsell = {
+          item: lastBundle.pairedItem,
+          quantity_kg: lastBundle.quantity,
+          unit_price: lastBundle.unitPrice,
+          discount_pct: lastBundle.discountPct,
+          reason: lastBundle.reason,
+        };
       }
 
       return {
         seller_id: sellerId,
-        item: off.item || rfq.item,
-        quantity_kg: Number(off.quantity) || rfq.quantity_kg,
-        quality: off.quality || rfq.quality_min || "Grade A",
-        base_price_per_kg: Number(off.base_price) || pricing.basePricePerUnit,
-        discount_pct: Number(off.discount_pct) ?? pricing.discountPct,
-        discount_reason: off.discount_reason || pricing.reason,
-        final_price_per_kg: Number(off.final_price) || pricing.finalPricePerUnit,
-        total_price: Number(off.total_price) || pricing.totalPrice,
+        item: lastComputedOffer.item,
+        quantity_kg: fulfillableQty,
+        quality: rfq.quality_min || "Grade A",
+        base_price_per_kg: state.basePrice,
+        discount_pct: lastComputedOffer.discountPct,
+        discount_reason: lastComputedOffer.reason,
+        final_price_per_kg: lastComputedOffer.unitPrice,
+        total_price: lastComputedOffer.totalPrice,
         delivery_by: tomorrow,
         offer_expires: expiresAt,
         rationale:
           off.rationale ||
-          `Offered ${off.item || rfq.item} at ₹${pricing.finalPricePerUnit}/unit (${pricing.discountPct}% ${pricing.reason}).`,
+          `Offered ${fulfillableQty}u ${lastComputedOffer.item} at ₹${lastComputedOffer.unitPrice}/unit (${lastComputedOffer.reason}).`,
         upsell_item: upsell,
       };
     }
@@ -182,7 +304,7 @@ async function callGemini(
 
 export async function sellerRespondToRfq(
   rfq: RfqPayload,
-  sellerId: string = "agent:seller:razor_pies"
+  sellerId: string = "agent:seller:razor_pies",
 ): Promise<OfferPayload> {
   const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
   const expiresAt = new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString();
@@ -191,78 +313,76 @@ export async function sellerRespondToRfq(
     const geminiKeys = getGeminiKeys();
     for (let i = 0; i < geminiKeys.length; i++) {
       try {
-        const offer = await callGemini(geminiKeys[i], rfq, sellerId, tomorrow, expiresAt);
+        const offer = await callGemini(
+          geminiKeys[i],
+          rfq,
+          sellerId,
+          tomorrow,
+          expiresAt,
+        );
         if (offer) return offer;
       } catch (err: any) {
-        console.warn(`[SellerAgent:${sellerId}] Gemini key #${i + 1} failed: ${err.message}`);
+        console.warn(
+          `[SellerAgent:${sellerId}] Gemini key #${i + 1} failed: ${err.message}`,
+        );
       }
     }
   }
 
-  // Legacy item compatibility
-  if (
-    rfq.item.toLowerCase() === "tomato" &&
-    (!sellerId || sellerId === "agent:seller:veggie_vendor_09" || sellerId === "agent:seller:razor_pies")
-  ) {
-    const legacy = InventoryStore.computeDiscount("tomato", rfq.quantity_kg);
-    return {
-      item: "tomato",
-      quantity_kg: rfq.quantity_kg,
-      quality: rfq.quality_min || "Grade A",
-      base_price_per_kg: legacy.basePricePerKg,
-      discount_pct: legacy.discountPct,
-      discount_reason: legacy.reason,
-      final_price_per_kg: legacy.finalPricePerKg,
-      total_price: legacy.totalPrice,
-      delivery_by: tomorrow,
-      offer_expires: expiresAt,
-      seller_id: sellerId || "agent:seller:veggie_vendor_09",
-      rationale: `Wholesale quote formulated with ${legacy.discountPct}% ${legacy.reason}.`,
-    };
-  }
-
-  const pricing = InventoryStore.computeSellerDiscount(
-    sellerId,
-    rfq.item,
-    rfq.quantity_kg,
-    rfq.target_price_per_unit
-  );
   const sellerCard = InventoryStore.getSellerCard(sellerId);
   const sellerName = sellerCard ? sellerCard.name : sellerId;
+  const state = InventoryStore.getSellerItemState(sellerId, rfq.item);
 
-  let upsell: UpsellItem | undefined;
-  if (sellerId === "agent:seller:razor_pies" && rfq.item.toLowerCase().includes("cheese")) {
-    upsell = {
-      item: "milk",
-      quantity_kg: 2,
-      unit_price: 8.1,
-      discount_pct: 10,
-      reason: "Surplus dairy bundle discount (-10%)",
+  if (!state || state.stock <= 0) {
+    return {
+      seller_id: sellerId,
+      item: rfq.item,
+      quantity_kg: 0,
+      quality: rfq.quality_min || "Grade A",
+      base_price_per_kg: state ? state.basePrice : 10,
+      discount_pct: 0,
+      discount_reason: "out_of_stock",
+      final_price_per_kg: state ? state.basePrice : 10,
+      total_price: 0,
+      delivery_by: tomorrow,
+      offer_expires: expiresAt,
+      rationale: `${sellerName} has 0 units of ${rfq.item} available in stock. Quote unavailable.`,
     };
   }
 
-  let concessionNarrative = "";
-  if (rfq.target_price_per_unit && rfq.target_price_per_unit < pricing.basePricePerUnit) {
-    if (pricing.finalPricePerUnit === pricing.floorPrice) {
-      concessionNarrative = ` (conceded to seller floor rate ₹${pricing.floorPrice}/unit against requested ₹${rfq.target_price_per_unit})`;
-    } else {
-      concessionNarrative = ` (conceded partway toward target ₹${rfq.target_price_per_unit})`;
-    }
+  const offer = computeSellerOffer(state, rfq.quantity_kg);
+  const pairedState = state.pairedItem
+    ? InventoryStore.getSellerItemState(sellerId, state.pairedItem) || undefined
+    : undefined;
+  const bundle = checkBundleOpportunity(state, pairedState);
+
+  let upsell: UpsellItem | undefined;
+  if (bundle) {
+    upsell = {
+      item: bundle.pairedItem,
+      quantity_kg: bundle.quantity,
+      unit_price: bundle.unitPrice,
+      discount_pct: bundle.discountPct,
+      reason: bundle.reason,
+    };
   }
 
   return {
     seller_id: sellerId,
-    item: pricing.item,
-    quantity_kg: rfq.quantity_kg,
+    item: offer.item,
+    quantity_kg: offer.offeredQty,
     quality: rfq.quality_min || "Grade A",
-    base_price_per_kg: pricing.basePricePerUnit,
-    discount_pct: pricing.discountPct,
-    discount_reason: pricing.reason,
-    final_price_per_kg: pricing.finalPricePerUnit,
-    total_price: pricing.totalPrice,
+    base_price_per_kg: state.basePrice,
+    discount_pct: offer.discountPct,
+    discount_reason: offer.reason,
+    final_price_per_kg: offer.unitPrice,
+    total_price: offer.totalPrice,
     delivery_by: tomorrow,
     offer_expires: expiresAt,
-    rationale: `${sellerName} offered rate ₹${pricing.finalPricePerUnit}/unit for ${rfq.quantity_kg} units from stock of ${pricing.availableStockUnits} units${concessionNarrative} (${pricing.discountPct > 0 ? `${pricing.discountPct}% ${pricing.reason}` : "base catalog rate"}). Floor price ₹${pricing.floorPrice}/unit enforced.`,
+    rationale:
+      offer.offeredQty <= 0
+        ? `${sellerName} has 0 units of ${rfq.item} available in stock. Quote unavailable.`
+        : `${sellerName} offered ${offer.offeredQty}u ${offer.item} at ₹${offer.unitPrice}/unit (${offer.reason}, stock: ${state.stock}u).`,
     upsell_item: upsell,
   };
 }

@@ -96,9 +96,16 @@ export function clearAll(): void {
   stmt.run();
 }
 
+export function getAllThreads(): string[] {
+  const stmt = db.prepare(`SELECT DISTINCT thread_id FROM messages ORDER BY timestamp DESC`);
+  const rows = stmt.all() as Array<{ thread_id: string }>;
+  return rows.map((r) => r.thread_id);
+}
+
 export class ThreadStore {
   static appendMessage = appendMessage;
   static getThread = getThread;
+  static getAllThreads = getAllThreads;
   static clearThread = clearThread;
   static clearAll = clearAll;
   static getConfirmedSpendingForAgent(buyerId: string): number {

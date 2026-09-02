@@ -3,22 +3,23 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { AgentCard, InventoryItem } from "../types/domain.js";
+import { SellerItemState, DiscountTier, computeSellerOffer } from "../agents/pricingEngine.js";
 
 // Hard Floor Prices for Seller Agents (Never breached under any negotiation concession)
 export const sellerFloorPrices: Record<string, Record<string, number>> = {
   "agent:seller:razor_pies": {
     cheese: 3.2,
-    flour: 6.5,
-    milk: 7.5,
+    flour: 5.8,
+    milk: 7.2,
   },
   "agent:seller:razorcery_1": {
-    flour: 5.0,
+    flour: 4.8,
     tomatoes: 3.0,
     onions: 3.2,
   },
   "agent:seller:razorcery_2": {
-    milk: 8.0,
-    tomatoes: 2.5,
+    milk: 7.5,
+    tomatoes: 2.4,
     onions: 4.0,
   },
   "agent:seller:veggie_vendor_09": {
@@ -34,14 +35,23 @@ export const defaultAgentCards: AgentCard[] = [
     name: "RazorPies Wholesale",
     stocked_items: ["cheese", "flour", "milk"],
     catalog: {
-      cheese: { base_price: 4, stock: 10, unit: "units" },
-      flour: { base_price: 8, stock: 6, unit: "units" },
-      milk: { base_price: 9, stock: 4, unit: "units" },
+      cheese: { base_price: 4, stock: 15, unit: "units" },
+      flour: { base_price: 8, stock: 25, unit: "units" },
+      milk: { base_price: 9, stock: 10, unit: "units" },
     },
     discount_tiers: {
-      cheese: [{ min_quantity: 5, discount_pct: 10 }],
-      flour: [{ min_quantity: 4, discount_pct: 10 }],
-      milk: [{ min_quantity: 3, discount_pct: 10 }],
+      cheese: [
+        { min_quantity: 5, discount_pct: 10 },
+        { min_quantity: 10, discount_pct: 20 },
+      ],
+      flour: [
+        { min_quantity: 10, discount_pct: 10 },
+        { min_quantity: 20, discount_pct: 27.5 },
+      ],
+      milk: [
+        { min_quantity: 3, discount_pct: 10 },
+        { min_quantity: 6, discount_pct: 20 },
+      ],
     },
     negotiable: true,
     description: "Specializes in artisan dairy, cheese wheels, and specialty pizza flours.",
@@ -51,14 +61,23 @@ export const defaultAgentCards: AgentCard[] = [
     name: "Razorcery Fresh #1",
     stocked_items: ["flour", "tomatoes", "onions"],
     catalog: {
-      flour: { base_price: 6, stock: 10, unit: "units" },
-      tomatoes: { base_price: 4, stock: 6, unit: "units" },
-      onions: { base_price: 4, stock: 4, unit: "units" },
+      flour: { base_price: 6, stock: 35, unit: "units" },
+      tomatoes: { base_price: 4, stock: 15, unit: "units" },
+      onions: { base_price: 4, stock: 15, unit: "units" },
     },
     discount_tiers: {
-      flour: [{ min_quantity: 5, discount_pct: 10 }],
-      tomatoes: [{ min_quantity: 4, discount_pct: 10 }],
-      onions: [{ min_quantity: 3, discount_pct: 10 }],
+      flour: [
+        { min_quantity: 5, discount_pct: 10 },
+        { min_quantity: 12, discount_pct: 20 },
+      ],
+      tomatoes: [
+        { min_quantity: 4, discount_pct: 10 },
+        { min_quantity: 8, discount_pct: 20 },
+      ],
+      onions: [
+        { min_quantity: 3, discount_pct: 10 },
+        { min_quantity: 6, discount_pct: 20 },
+      ],
     },
     negotiable: true,
     description: "Wholesale grain and farm-fresh vine vegetables vendor.",
@@ -68,17 +87,47 @@ export const defaultAgentCards: AgentCard[] = [
     name: "Razorcery Dairy & Veg #2",
     stocked_items: ["milk", "tomatoes", "onions"],
     catalog: {
-      milk: { base_price: 10, stock: 10, unit: "units" },
-      tomatoes: { base_price: 3, stock: 6, unit: "units" },
-      onions: { base_price: 5, stock: 4, unit: "units" },
+      milk: { base_price: 10, stock: 15, unit: "units" },
+      tomatoes: { base_price: 3, stock: 15, unit: "units" },
+      onions: { base_price: 5, stock: 15, unit: "units" },
     },
     discount_tiers: {
-      milk: [{ min_quantity: 5, discount_pct: 15 }],
-      tomatoes: [{ min_quantity: 4, discount_pct: 10 }],
-      onions: [{ min_quantity: 3, discount_pct: 10 }],
+      milk: [
+        { min_quantity: 5, discount_pct: 15 },
+        { min_quantity: 10, discount_pct: 25 },
+      ],
+      tomatoes: [
+        { min_quantity: 4, discount_pct: 10 },
+        { min_quantity: 8, discount_pct: 20 },
+      ],
+      onions: [
+        { min_quantity: 3, discount_pct: 10 },
+        { min_quantity: 6, discount_pct: 20 },
+      ],
     },
     negotiable: true,
     description: "Direct-to-kitchen organic dairy distributor and produce vendor.",
+  },
+  {
+    agent_id: "agent:seller:veggie_vendor_09",
+    name: "Veggie Vendor 09",
+    stocked_items: ["tomato", "tomatoes"],
+    catalog: {
+      tomato: { base_price: 32, stock: 500, unit: "kg" },
+      tomatoes: { base_price: 32, stock: 500, unit: "kg" },
+    },
+    discount_tiers: {
+      tomato: [
+        { min_quantity: 30, discount_pct: 10 },
+        { min_quantity: 75, discount_pct: 18 },
+      ],
+      tomatoes: [
+        { min_quantity: 30, discount_pct: 10 },
+        { min_quantity: 75, discount_pct: 18 },
+      ],
+    },
+    negotiable: true,
+    description: "Wholesale bulk produce vendor.",
   },
 ];
 
@@ -100,6 +149,16 @@ export const defaultBuyerInventory = {
     milk: 5,
   },
   target_stock: 30,
+};
+
+export const defaultInventory = {
+  item: "tomato",
+  stock_kg: 500,
+  base_price_per_kg: 32,
+  discount_tiers: [
+    { min_quantity_kg: 30, discount_pct: 10 },
+    { min_quantity_kg: 75, discount_pct: 18 },
+  ],
 };
 
 // Database Connection
@@ -168,6 +227,18 @@ export function saveDefaultAgentCards(): void {
 }
 
 /**
+ * Save a single agent card
+ */
+export function saveAgentCard(card: AgentCard): void {
+  const stmt = db.prepare(`
+    INSERT INTO agent_cards (agent_id, data)
+    VALUES (?, ?)
+    ON CONFLICT(agent_id) DO UPDATE SET data = excluded.data
+  `);
+  stmt.run(card.agent_id, JSON.stringify(card));
+}
+
+/**
  * Get a specific seller's Agent Card
  */
 export function getSellerCard(sellerId: string): AgentCard | null {
@@ -207,6 +278,32 @@ export function saveBuyerInventory(data: typeof defaultBuyerInventory): void {
 }
 
 /**
+ * Synchronizes in-memory / UI seller inventories to SQLite agent_cards table.
+ */
+export function syncSellerInventories(
+  inventories: Record<string, Record<string, number>>
+): void {
+  const cards = getAgentCards();
+  for (const [sellerId, items] of Object.entries(inventories)) {
+    const card = cards.find(
+      (c) => c.agent_id.toLowerCase().replace(/[^a-z0-9_:]/g, "") === sellerId.toLowerCase().replace(/[^a-z0-9_:]/g, "")
+    );
+    if (card) {
+      for (const [itemName, stock] of Object.entries(items)) {
+        const norm = itemName.toLowerCase().trim().replace(/s$/, "");
+        const catKey = Object.keys(card.catalog).find(
+          (k) => k.toLowerCase() === itemName.toLowerCase() || k.toLowerCase().replace(/s$/, "") === norm
+        );
+        if (catKey && card.catalog[catKey]) {
+          card.catalog[catKey].stock = Math.max(0, Number(stock));
+        }
+      }
+      saveAgentCard(card);
+    }
+  }
+}
+
+/**
  * Updates stock levels upon successful order confirmation:
  * Increases Buyer's stock, decreases Seller's stock.
  */
@@ -240,12 +337,7 @@ export function updateStockAfterOrder(
       );
       if (catKey && seller.catalog[catKey]) {
         seller.catalog[catKey].stock = Math.max(0, seller.catalog[catKey].stock - p.quantity);
-        const stmt = db.prepare(`
-          INSERT INTO agent_cards (agent_id, data)
-          VALUES (?, ?)
-          ON CONFLICT(agent_id) DO UPDATE SET data = excluded.data
-        `);
-        stmt.run(seller.agent_id, JSON.stringify(seller));
+        saveAgentCard(seller);
       }
     }
   }
@@ -255,7 +347,49 @@ export function updateStockAfterOrder(
 }
 
 /**
+ * Builds a deterministic SellerItemState for pricing calculations.
+ */
+export function getSellerItemState(sellerId: string, itemName: string): SellerItemState | null {
+  let seller = getSellerCard(sellerId);
+  const normalizedItem = itemName.toLowerCase().trim().replace(/s$/, "");
+
+  if (normalizedItem === "tomato" && (!seller || !seller.catalog["tomato"])) {
+    const veggieSeller = getSellerCard("agent:seller:veggie_vendor_09");
+    if (veggieSeller) seller = veggieSeller;
+  }
+
+  if (!seller) return null;
+
+  const catalogKey =
+    Object.keys(seller.catalog).find(
+      (k) => k.toLowerCase() === itemName.toLowerCase() || k.toLowerCase().replace(/s$/, "") === normalizedItem
+    ) || itemName;
+
+  const catalogEntry = seller.catalog[catalogKey] || { base_price: 5, stock: 0 };
+  const rawTiers = seller.discount_tiers?.[catalogKey] || [];
+  const tiers: DiscountTier[] = rawTiers.map((t) => ({
+    minQty: t.min_quantity,
+    discountPct: t.discount_pct,
+  }));
+
+  const parLevel = (catalogEntry as any).par_level ?? Math.max(10, Math.round(catalogEntry.stock * 0.8));
+  const overstockThresholdPct = 0.7;
+  const pairedItem = (catalogEntry as any).paired_item ?? (seller.agent_id === "agent:seller:razor_pies" && normalizedItem === "cheese" ? "milk" : undefined);
+
+  return {
+    item: catalogKey,
+    stock: catalogEntry.stock,
+    basePrice: catalogEntry.base_price,
+    tiers,
+    parLevel,
+    overstockThresholdPct,
+    pairedItem,
+  };
+}
+
+/**
  * Computes dynamic wholesale pricing & volume discounts for a specific seller and item.
+ * Uses deterministic computeSellerOffer with strict stock clamping.
  */
 export function computeSellerDiscount(
   sellerId: string,
@@ -272,11 +406,12 @@ export function computeSellerDiscount(
   totalPrice: number;
   availableStockUnits: number;
   floorPrice: number;
+  stockLimited: boolean;
+  offeredQty: number;
 } {
-  const normalizedItem = itemName.toLowerCase().trim().replace(/s$/, "");
-  const seller = getSellerCard(sellerId);
+  const state = getSellerItemState(sellerId, itemName);
 
-  if (!seller) {
+  if (!state) {
     return {
       sellerId,
       item: itemName,
@@ -287,79 +422,57 @@ export function computeSellerDiscount(
       totalPrice: 10 * quantityUnits,
       availableStockUnits: 0,
       floorPrice: 7.5,
+      stockLimited: true,
+      offeredQty: 0,
     };
   }
 
-  const catalogKey =
-    Object.keys(seller.catalog).find(
-      (k) => k.toLowerCase() === itemName.toLowerCase() || k.toLowerCase().replace(/s$/, "") === normalizedItem
-    ) || itemName;
-
-  const catalogEntry = seller.catalog[catalogKey] || { base_price: 5, stock: 0 };
-  const basePrice = catalogEntry.base_price;
-  const availableStock = catalogEntry.stock;
-
-  // Determine floor price for this seller & item
-  const sellerFloors = sellerFloorPrices[seller.agent_id] || {};
+  const offer = computeSellerOffer(state, quantityUnits);
+  const sellerFloors = sellerFloorPrices[sellerId] || {};
   const floorKey = Object.keys(sellerFloors).find(
-    (k) => k.toLowerCase() === catalogKey.toLowerCase() || k.toLowerCase() === normalizedItem
+    (k) => k.toLowerCase() === offer.item.toLowerCase() || k.toLowerCase().replace(/s$/, "") === offer.item.toLowerCase().replace(/s$/, "")
   );
-  const floorPrice = floorKey ? sellerFloors[floorKey] : Number((basePrice * 0.7).toFixed(2));
-
-  let discountPct = 0;
-  let reason = "standard_catalog_rate";
-
-  // Check volume discount tiers
-  const itemTiers = seller.discount_tiers?.[catalogKey] || [];
-  if (itemTiers.length > 0) {
-    const sortedTiers = [...itemTiers].sort((a, b) => b.min_quantity - a.min_quantity);
-    for (const tier of sortedTiers) {
-      if (quantityUnits >= tier.min_quantity) {
-        discountPct = tier.discount_pct;
-        reason = `volume_tier_gte_${tier.min_quantity}_units`;
-        break;
-      }
-    }
-  }
-
-  // Dynamic clearance discount: if order takes >= 50% of available stock
-  if (discountPct === 0 && availableStock > 0 && quantityUnits >= availableStock * 0.5) {
-    discountPct = 5;
-    reason = "excess_stock_clearance";
-  }
-
-  let finalPrice = Number((basePrice * (1 - discountPct / 100)).toFixed(2));
-
-  // If buyer asked for a target price below current rate, seller moves partway toward ask, bounded by floor price
-  if (targetPricePerUnit && targetPricePerUnit < finalPrice) {
-    const concessionStep = (finalPrice - targetPricePerUnit) * 0.45;
-    const proposed = finalPrice - concessionStep;
-    finalPrice = Number(Math.max(floorPrice, proposed).toFixed(2));
-    discountPct = Number(((1 - finalPrice / basePrice) * 100).toFixed(1));
-    reason = finalPrice === floorPrice ? "concession_to_hard_floor_limit" : "volume_commitment_concession";
-  }
-
-  // Enforce floor price strictly
-  finalPrice = Math.max(floorPrice, finalPrice);
-  const totalPrice = Number((finalPrice * quantityUnits).toFixed(2));
+  const floorPrice = floorKey ? sellerFloors[floorKey] : Number((state.basePrice * 0.7).toFixed(2));
 
   return {
-    sellerId: seller.agent_id,
-    item: catalogKey,
-    discountPct,
-    reason,
-    basePricePerUnit: basePrice,
-    finalPricePerUnit: finalPrice,
-    totalPrice,
-    availableStockUnits: availableStock,
+    sellerId,
+    item: offer.item,
+    discountPct: offer.discountPct,
+    reason: offer.reason,
+    basePricePerUnit: state.basePrice,
+    finalPricePerUnit: offer.unitPrice,
+    totalPrice: offer.totalPrice,
+    availableStockUnits: state.stock,
     floorPrice,
+    stockLimited: offer.stockLimited,
+    offeredQty: offer.offeredQty,
   };
 }
 
 /**
- * Backward compatibility for legacy single-item getItem / computeDiscount
+ * Saves a single inventory item to SQLite database
+ */
+export function saveItem(item: InventoryItem | typeof defaultInventory): void {
+  const stmt = db.prepare(`
+    INSERT INTO inventory (item, data)
+    VALUES (?, ?)
+    ON CONFLICT(item) DO UPDATE SET data = excluded.data
+  `);
+  stmt.run(item.item, JSON.stringify(item));
+}
+
+/**
+ * Retrieves inventory item from SQLite database (with default fallback)
  */
 export function getItem(item: string): InventoryItem | null {
+  try {
+    const row = db.prepare(`SELECT data FROM inventory WHERE item = ?`).get(item) as { data: string } | undefined;
+    if (row) {
+      return JSON.parse(row.data);
+    }
+  } catch {
+    // fallback
+  }
   return {
     item,
     stock_kg: 500,
@@ -371,6 +484,9 @@ export function getItem(item: string): InventoryItem | null {
   };
 }
 
+/**
+ * Computes discount for legacy single-item test suite
+ */
 export function computeDiscount(
   itemName: string,
   quantityKg: number
@@ -382,16 +498,33 @@ export function computeDiscount(
   totalPrice: number;
   availableStockKg: number;
 } {
-  const basePrice = 32;
+  const item = getItem(itemName) || {
+    item: itemName,
+    stock_kg: 500,
+    base_price_per_kg: 32,
+    discount_tiers: [
+      { min_quantity_kg: 30, discount_pct: 10 },
+      { min_quantity_kg: 75, discount_pct: 18 },
+    ],
+  };
+
+  const basePrice = item.base_price_per_kg;
   let discountPct = 0;
   let reason = "standard_pricing";
 
-  if (quantityKg >= 75) {
-    discountPct = 18;
-    reason = "bulk_volume_tier";
-  } else if (quantityKg >= 30) {
-    discountPct = 10;
-    reason = "volume_tier";
+  const sortedTiers = [...item.discount_tiers].sort((a, b) => b.min_quantity_kg - a.min_quantity_kg);
+  for (const tier of sortedTiers) {
+    if (quantityKg >= tier.min_quantity_kg) {
+      discountPct = tier.discount_pct;
+      reason = tier.min_quantity_kg >= 75 ? "bulk_volume_tier" : "volume_tier";
+      break;
+    }
+  }
+
+  // Dynamic clearance discount: if order takes >= 15% of available stock and no tiers
+  if (discountPct === 0 && item.stock_kg > 0 && quantityKg >= item.stock_kg * 0.15) {
+    discountPct = 5;
+    reason = "excess_stock_clearance";
   }
 
   const finalPricePerKg = Number((basePrice * (1 - discountPct / 100)).toFixed(2));
@@ -403,17 +536,22 @@ export function computeDiscount(
     basePricePerKg: basePrice,
     finalPricePerKg,
     totalPrice,
-    availableStockKg: 500,
+    availableStockKg: item.stock_kg,
   };
 }
 
 export class InventoryStore {
   static getAgentCards = getAgentCards;
   static getSellerCard = getSellerCard;
+  static saveAgentCard = saveAgentCard;
+  static saveDefaultAgentCards = saveDefaultAgentCards;
+  static syncSellerInventories = syncSellerInventories;
   static getBuyerInventory = getBuyerInventory;
   static saveBuyerInventory = saveBuyerInventory;
   static updateStockAfterOrder = updateStockAfterOrder;
+  static getSellerItemState = getSellerItemState;
   static computeSellerDiscount = computeSellerDiscount;
+  static saveItem = saveItem;
   static getItem = getItem;
   static computeDiscount = computeDiscount;
   static sellerFloorPrices = sellerFloorPrices;

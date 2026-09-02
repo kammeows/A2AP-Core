@@ -2,6 +2,12 @@ import { appendMessage, getThread, db } from "../thread/threadStore.js";
 import { evaluateDeal } from "../policy/policyEngine.js";
 import { sellerRespondToRfq } from "../agents/sellerAgent.js";
 import { buyerEvaluateOffer } from "../agents/buyerAgent.js";
+import {
+  evaluateOfferAgainstCeiling,
+  computeCounterQuantity,
+  getBuyerCeiling,
+  defaultBuyerNegotiationPolicy,
+} from "../agents/negotiationPolicy.js";
 import { razorpayClient } from "../payments/razorpayClient.js";
 import { Envelope, MessageType } from "../types/messages.js";
 import {
@@ -147,6 +153,7 @@ export interface RunNegotiationParams {
   itemToProcure?: string;
   quantityNeeded?: number;
   itemsToProcure?: ItemDeficit[];
+  sellerInventories?: Record<string, Record<string, number>>;
 }
 
 export async function runNegotiation(
@@ -165,6 +172,11 @@ export async function runNegotiation(
     };
   } else if (paramsOrThreadId) {
     params = paramsOrThreadId;
+  }
+
+  // Sync live seller inventories if provided from UI
+  if (params.sellerInventories) {
+    InventoryStore.syncSellerInventories(params.sellerInventories);
   }
 
   const threadId =
@@ -223,15 +235,17 @@ export async function runNegotiation(
   for (const it of itemsList) {
     const item = it.item;
     const deficitQuantity = it.quantity;
+    const norm = item.toLowerCase().trim().replace(/s$/, "");
 
-    // Strategic buyer target price below catalog list rates (simulation-2.md requirement 3)
+    // Strategic buyer target price below catalog list rates
     let targetPricePerUnit = 3.5;
-    const norm = item.toLowerCase().replace(/s$/, "");
     if (norm === "cheese") targetPricePerUnit = 3.2;
     else if (norm === "flour") targetPricePerUnit = 5.0;
-    else if (norm === "tomato") targetPricePerUnit = 2.8;
+    else if (norm === "tomato") targetPricePerUnit = item.toLowerCase() === "tomato" ? 28.0 : 2.8;
     else if (norm === "onion") targetPricePerUnit = 3.2;
     else if (norm === "milk") targetPricePerUnit = 7.5;
+
+    const negotiationCeiling = getBuyerCeiling(item, policy.per_unit_price_ceiling[item]);
 
     let matchingSellers: AgentCard[];
     if (scenario === "happy" || scenario === "failure") {
@@ -294,57 +308,110 @@ export async function runNegotiation(
     }
 
     // Collect Round 1 Quotes
-    const sellerOfferPromises = matchingSellers.map((seller) =>
-      sellerRespondToRfq(rfqBase, seller.agent_id)
+    const rawOffers = await Promise.all(
+      matchingSellers.map((seller) => sellerRespondToRfq(rfqBase, seller.agent_id))
     );
-    let sellerOffers = await Promise.all(sellerOfferPromises);
 
-    for (const offer of sellerOffers) {
-      logEnvelope(threadId, "OFFER", offer.seller_id || "agent:seller", BUYER_ID, {
+    let sellerOffers: OfferPayload[] = [];
+    for (let i = 0; i < matchingSellers.length; i++) {
+      const seller = matchingSellers[i];
+      const offer = rawOffers[i];
+      const state = InventoryStore.getSellerItemState(seller.agent_id, item);
+      const currentStock = state ? state.stock : (scenario === "happy" || scenario === "failure" ? 500 : 0);
+
+      // Hard code-level check: reject ONLY when current stock is strictly 0 or offer quantity is 0
+      if (offer.quantity_kg <= 0 || currentStock <= 0) {
+        logEnvelope(threadId, "REJECT", seller.agent_id, BUYER_ID, {
+          item,
+          requested_quantity: rfqBase.quantity_kg,
+          offered_quantity: 0,
+          current_stock: currentStock,
+          reason: "out_of_stock",
+          narrative: `${seller.name} rejected quote: ${item} is currently out of stock (0u available).`,
+        });
+        continue;
+      }
+
+      const isStockLimited = offer.quantity_kg < rfqBase.quantity_kg;
+      const stockLimitText = isStockLimited
+        ? ` (seller has only ${offer.quantity_kg}u in stock, partial fulfillment offered)`
+        : "";
+
+      logEnvelope(threadId, "OFFER", offer.seller_id || seller.agent_id, BUYER_ID, {
         ...offer,
-        narrative: `Wholesale quote (Round 1): ${offer.quantity_kg} units at ₹${offer.final_price_per_kg}/unit (Total ₹${offer.total_price}) with ${offer.discount_pct}% discount.`,
+        stock_limited: isStockLimited,
+        stockLimited: isStockLimited,
+        narrative: `Wholesale quote (Round 1): ${offer.quantity_kg} units at ₹${offer.final_price_per_kg}/unit (Total ₹${offer.total_price}) with ${offer.discount_pct}% discount (current stock: ${currentStock}u)${stockLimitText}.`,
       });
+      sellerOffers.push(offer);
+    }
+
+    if (sellerOffers.length === 0) {
+      logEnvelope(threadId, "REJECT", BUYER_ID, POLICY_ENGINE_ID, {
+        reason: "no_valid_stock_offers",
+        item,
+        narrative: `All matching sellers lack sufficient stock for ${item}. Procurement skipped for this item.`,
+      });
+      continue;
     }
 
     // =========================================================================
-    // ROUND 2: Counter-Offer trading volume commitment for better unit rate
-    // (simulation-2.md requirement 3 & 4)
+    // ROUND 2: Volume-for-Price Counter Negotiation Loop
     // =========================================================================
-    if (scenario === "custom" && allowRenegotiation && matchingSellers.length > 0) {
+    if (scenario === "custom" && allowRenegotiation && sellerOffers.length > 0) {
       const revisedOffers: OfferPayload[] = [];
       let hadCounter = false;
 
       for (const initialOffer of sellerOffers) {
-        // If the seller's quote didn't reach the buyer's target price, counter with more volume commitment
-        if (initialOffer.final_price_per_kg > targetPricePerUnit) {
-          hadCounter = true;
-          const committedQty = Math.max(initialOffer.quantity_kg + 3, Math.ceil(initialOffer.quantity_kg * 1.35));
-          const targetSellerId = initialOffer.seller_id || "agent:seller";
+        const targetSellerId = initialOffer.seller_id || "agent:seller";
+        const state = InventoryStore.getSellerItemState(targetSellerId, item);
+        const currentStock = state ? state.stock : 0;
 
-          logEnvelope(threadId, "COUNTER_OFFER", BUYER_ID, targetSellerId, {
-            item,
-            quantity_kg: committedQty,
-            target_price_per_unit: targetPricePerUnit,
-            narrative: `Volume Commitment Counter: "I'll commit to ${committedQty} units instead of ${initialOffer.quantity_kg} units if you do ₹${targetPricePerUnit.toFixed(2)}/unit."`,
-          });
+        const ceilingCheck = evaluateOfferAgainstCeiling(initialOffer.final_price_per_kg, negotiationCeiling);
 
-          // Seller evaluates counter and concedes partway, bounded by code-enforced floor price
-          const counterRfq: RfqPayload = {
-            item,
-            quantity_kg: committedQty,
-            quality_min: "Grade A",
-            needed_by: tomorrow,
-            buyer_max_price_per_kg: policy.per_unit_price_ceiling[item] || 35,
-            target_price_per_unit: targetPricePerUnit,
-          };
+        // If the seller's quote exceeds the buyer's ceiling, counter with more volume commitment
+        if (!ceilingCheck.passed && !initialOffer.stockLimited && currentStock > initialOffer.quantity_kg) {
+          const counterQty = computeCounterQuantity(
+            initialOffer.quantity_kg,
+            deficitQuantity,
+            defaultBuyerNegotiationPolicy
+          );
+          const committedQty = Math.min(currentStock, counterQty);
 
-          const revisedOffer = await sellerRespondToRfq(counterRfq, targetSellerId);
-          logEnvelope(threadId, "OFFER", targetSellerId, BUYER_ID, {
-            ...revisedOffer,
-            narrative: `Revised quote (Round 2): ${revisedOffer.quantity_kg} units at ₹${revisedOffer.final_price_per_kg}/unit (Total ₹${revisedOffer.total_price}) after volume concession.`,
-          });
+          if (committedQty > initialOffer.quantity_kg) {
+            hadCounter = true;
+            logEnvelope(threadId, "COUNTER_OFFER", BUYER_ID, targetSellerId, {
+              item,
+              quantity_kg: committedQty,
+              target_price_per_unit: targetPricePerUnit,
+              narrative: `Volume Commitment Counter: "I'll commit to ${committedQty} units instead of ${initialOffer.quantity_kg} units if you do ₹${targetPricePerUnit.toFixed(2)}/unit."`,
+            });
 
-          revisedOffers.push(revisedOffer);
+            const counterRfq: RfqPayload = {
+              item,
+              quantity_kg: committedQty,
+              quality_min: "Grade A",
+              needed_by: tomorrow,
+              buyer_max_price_per_kg: policy.per_unit_price_ceiling[item] || 35,
+              target_price_per_unit: targetPricePerUnit,
+            };
+
+            const revisedOffer = await sellerRespondToRfq(counterRfq, targetSellerId);
+
+            if (revisedOffer.quantity_kg <= 0) {
+              revisedOffers.push(initialOffer);
+              continue;
+            }
+
+            logEnvelope(threadId, "OFFER", targetSellerId, BUYER_ID, {
+              ...revisedOffer,
+              narrative: `Revised quote (Round 2): ${revisedOffer.quantity_kg} units at ₹${revisedOffer.final_price_per_kg}/unit (Total ₹${revisedOffer.total_price}) after volume concession (current stock: ${currentStock}u).`,
+            });
+
+            revisedOffers.push(revisedOffer);
+          } else {
+            revisedOffers.push(initialOffer);
+          }
         } else {
           revisedOffers.push(initialOffer);
         }
@@ -353,7 +420,7 @@ export async function runNegotiation(
       if (hadCounter) {
         sellerOffers = revisedOffers;
 
-        // Enforce Hard Round Cap (simulation-2.md requirement 5)
+        // Enforce Hard 2-Round Cap
         logEnvelope(threadId, "ROUND_CAP_REACHED", POLICY_ENGINE_ID, BUYER_ID, {
           round_count: 2,
           round_limit: 2,

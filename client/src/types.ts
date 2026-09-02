@@ -92,6 +92,8 @@ export interface OfferPayload {
   seller_id?: string;
   rationale?: string;
   upsell_item?: UpsellItem;
+  stock_limited?: boolean;
+  stockLimited?: boolean;
 }
 
 export interface SplitAcceptItem {

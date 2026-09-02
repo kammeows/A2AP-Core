@@ -67,6 +67,7 @@ export async function triggerNegotiation(params: {
   quantityNeeded?: number;
   itemsToProcure?: Array<{ item: string; quantity: number }>;
   customRfq?: any;
+  sellerInventories?: Record<string, Record<string, number>>;
 }): Promise<NegotiationResult> {
   const res = await fetch(`${API_BASE}/negotiate`, {
     method: 'POST',

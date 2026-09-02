@@ -12,6 +12,12 @@ import {
 } from "../types/domain.js";
 import { InventoryStore } from "../inventory/inventoryStore.js";
 import { BUYER_SYSTEM_PROMPT } from "./prompts.js";
+import {
+  evaluateOfferAgainstCeiling,
+  computeCounterQuantity,
+  getBuyerCeiling,
+  defaultBuyerNegotiationPolicy,
+} from "./negotiationPolicy.js";
 
 try {
   const __filename = fileURLToPath(import.meta.url);
@@ -57,23 +63,40 @@ async function callGemini(
   profile: RestaurantProfile,
   agentCards: AgentCard[],
   neededItem: string,
-  neededQuantity: number,
+  neededQuantity: number
 ): Promise<BuyerDecision | null> {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+  const ceiling = getBuyerCeiling(neededItem, profile.max_price_per_kg[neededItem]);
 
   const tools = [
     {
       functionDeclarations: [
         {
-          name: "fetch_agent_cards",
-          description:
-            "Retrieve official Agent Cards of all known wholesale sellers in the A2A network.",
-          parameters: { type: "OBJECT", properties: {} },
+          name: "evaluate_offer_against_ceiling",
+          description: "Check if a seller's quoted unit price is within budget ceiling for this item.",
+          parameters: {
+            type: "OBJECT",
+            properties: {
+              unit_price: { type: "NUMBER" },
+            },
+            required: ["unit_price"],
+          },
+        },
+        {
+          name: "compute_counter_quantity",
+          description: "Compute bounded counter-quantity to unlock a better volume tier without over-ordering.",
+          parameters: {
+            type: "OBJECT",
+            properties: {
+              current_ask: { type: "NUMBER" },
+              deficit: { type: "NUMBER" },
+            },
+            required: ["current_ask", "deficit"],
+          },
         },
         {
           name: "propose_accept",
-          description:
-            "Propose accepting an offer from a single seller for Policy Engine verification.",
+          description: "Propose accepting an offer from a single seller for Policy Engine verification.",
           parameters: {
             type: "OBJECT",
             properties: {
@@ -84,19 +107,12 @@ async function callGemini(
               total_price: { type: "NUMBER" },
               rationale: { type: "STRING" },
             },
-            required: [
-              "seller_id",
-              "item",
-              "quantity_kg",
-              "total_price",
-              "rationale",
-            ],
+            required: ["seller_id", "item", "quantity_kg", "total_price", "rationale"],
           },
         },
         {
           name: "propose_split_accept",
-          description:
-            "Propose splitting an ingredient purchase across multiple sellers if total cost is lower.",
+          description: "Propose splitting an ingredient purchase across multiple sellers if total cost is lower.",
           parameters: {
             type: "OBJECT",
             properties: {
@@ -106,18 +122,12 @@ async function callGemini(
               splits_json: { type: "STRING" },
               rationale: { type: "STRING" },
             },
-            required: [
-              "item",
-              "total_quantity_kg",
-              "total_cost",
-              "splits_json",
-              "rationale",
-            ],
+            required: ["item", "total_quantity_kg", "total_cost", "splits_json", "rationale"],
           },
         },
         {
           name: "send_counter",
-          description: "Send an adjusted counter offer to a seller.",
+          description: "Send an adjusted volume counter-offer to a seller.",
           parameters: {
             type: "OBJECT",
             properties: {
@@ -127,27 +137,23 @@ async function callGemini(
               target_price_per_kg: { type: "NUMBER" },
               reason: { type: "STRING" },
             },
-            required: ["seller_id", "reason"],
+            required: ["seller_id", "counter_quantity_kg", "reason"],
           },
         },
       ],
     },
   ];
 
-  const contents = [
+  const contents: any[] = [
     {
       role: "user",
       parts: [
         {
-          text: `${BUYER_SYSTEM_PROMPT}\n\nTarget Item: "${neededItem}", Deficit Quantity: ${neededQuantity} units.\nKnown Sellers Agent Cards: ${JSON.stringify(
-            agentCards,
-          )}.\nReceived Seller Quotes: ${JSON.stringify(
-            offers,
-          )}.\nRestaurant Profile: ${JSON.stringify(
-            profile,
-          )}.\nMenu Recipes: ${JSON.stringify(
-            RAZORSLICE_MENU,
-          )}.\n\nCompare offers and call propose_accept, propose_split_accept, or send_counter.`,
+          text: `${BUYER_SYSTEM_PROMPT}\n\nTarget Item: "${neededItem}", Deficit Quantity: ${neededQuantity} units, Ceiling: ₹${ceiling}/unit.\nReceived Quotes: ${JSON.stringify(
+            offers
+          )}.\nRestaurant Profile: ${JSON.stringify(profile)}.\nMenu Recipes: ${JSON.stringify(
+            RAZORSLICE_MENU
+          )}.\n\nEvaluate offers using \`evaluate_offer_against_ceiling\` and call \`propose_accept\`, \`propose_split_accept\`, or \`send_counter\`.`,
         },
       ],
     },
@@ -162,71 +168,123 @@ async function callGemini(
 
   if (!res.ok) return null;
   const data = await res.json();
-  const functionCalls = data.candidates?.[0]?.content?.parts?.filter(
-    (p: any) => p.functionCall,
-  );
+  const candidate = data.candidates?.[0];
+  const functionCalls = candidate?.content?.parts?.filter((p: any) => p.functionCall);
 
   if (!functionCalls || functionCalls.length === 0) return null;
 
-  const firstCall = functionCalls[0].functionCall;
-  const name = firstCall.name;
-  const args = firstCall.args || {};
+  const functionResponses: any[] = [];
+  for (const call of functionCalls) {
+    const fnName = call.functionCall.name;
+    const args = call.functionCall.args || {};
 
-  if (name === "propose_accept") {
-    const matchedOffer =
-      offers.find((o) => o.seller_id === args.seller_id) || offers[0];
-    return {
-      action: "propose_accept",
-      target_offer: {
-        ...matchedOffer,
-        final_price_per_kg:
-          Number(args.final_price_per_kg) || matchedOffer?.final_price_per_kg,
-        total_price: Number(args.total_price) || matchedOffer?.total_price,
-      },
-      rationale:
-        args.rationale ||
-        `Proposed acceptance for ${args.quantity_kg || neededQuantity} units from ${args.seller_id} at total ₹${args.total_price}.`,
-    };
-  } else if (name === "propose_split_accept") {
-    let parsedSplits = [];
-    try {
-      parsedSplits =
-        typeof args.splits_json === "string"
-          ? JSON.parse(args.splits_json)
-          : args.splits_json || [];
-    } catch {
-      parsedSplits = [];
+    if (fnName === "evaluate_offer_against_ceiling") {
+      const p = Number(args.unit_price) || (offers[0]?.final_price_per_kg ?? 10);
+      const check = evaluateOfferAgainstCeiling(p, ceiling);
+      functionResponses.push({
+        functionResponse: {
+          name: "evaluate_offer_against_ceiling",
+          response: check,
+        },
+      });
+    } else if (fnName === "compute_counter_quantity") {
+      const cur = Number(args.current_ask) || neededQuantity;
+      const def = Number(args.deficit) || neededQuantity;
+      const counterQty = computeCounterQuantity(cur, def, defaultBuyerNegotiationPolicy);
+      functionResponses.push({
+        functionResponse: {
+          name: "compute_counter_quantity",
+          response: { counterQty },
+        },
+      });
+    } else if (fnName === "propose_accept") {
+      const matchedOffer = offers.find((o) => o.seller_id === args.seller_id) || offers[0];
+      return {
+        action: "propose_accept",
+        target_offer: matchedOffer,
+        rationale:
+          args.rationale ||
+          `Proposed acceptance for ${matchedOffer.quantity_kg} units from ${matchedOffer.seller_id} at total ₹${matchedOffer.total_price}.`,
+      };
+    } else if (fnName === "send_counter") {
+      return {
+        action: "send_counter",
+        counter: {
+          item: args.item || neededItem,
+          quantity_kg: Number(args.counter_quantity_kg) || neededQuantity,
+          buyer_max_price_per_kg: Number(args.target_price_per_kg) || ceiling,
+          target_seller_id: args.seller_id,
+        },
+        reason: args.reason || "Counter-offer proposed to fit budget limits.",
+      };
     }
+  }
 
-    const splitPayload: SplitAcceptPayload = {
-      item: args.item || neededItem,
-      total_quantity_kg: Number(args.total_quantity_kg) || neededQuantity,
-      total_cost: Number(args.total_cost) || 0,
-      splits: parsedSplits,
-      rationale:
-        args.rationale ||
-        `Split order across ${parsedSplits.length} sellers to minimize total cost.`,
-    };
+  if (functionResponses.length > 0) {
+    contents.push(candidate.content);
+    contents.push({
+      role: "function",
+      parts: functionResponses,
+    });
 
-    return {
-      action: "propose_split_accept",
-      split_payload: splitPayload,
-      rationale: splitPayload.rationale,
-    };
-  } else if (name === "send_counter") {
-    return {
-      action: "send_counter",
-      counter: {
-        item: args.item || neededItem,
-        quantity_kg: Number(args.counter_quantity_kg) || neededQuantity,
-        buyer_max_price_per_kg:
-          Number(args.target_price_per_kg) ||
-          profile.max_price_per_kg[neededItem] ||
-          35,
-        target_seller_id: args.seller_id,
-      },
-      reason: args.reason || "Counter-offer proposed to fit budget limits.",
-    };
+    const res2 = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ contents, tools }),
+      signal: AbortSignal.timeout(3500),
+    });
+
+    if (!res2.ok) return null;
+    const data2 = await res2.json();
+    const secondCalls = data2.candidates?.[0]?.content?.parts?.filter((p: any) => p.functionCall);
+    const firstCall = secondCalls?.[0]?.functionCall;
+
+    if (firstCall) {
+      const name = firstCall.name;
+      const args = firstCall.args || {};
+
+      if (name === "propose_accept") {
+        const matchedOffer = offers.find((o) => o.seller_id === args.seller_id) || offers[0];
+        return {
+          action: "propose_accept",
+          target_offer: matchedOffer,
+          rationale:
+            args.rationale ||
+            `Proposed acceptance for ${matchedOffer.quantity_kg} units from ${matchedOffer.seller_id} at total ₹${matchedOffer.total_price}.`,
+        };
+      } else if (name === "propose_split_accept") {
+        let parsedSplits = [];
+        try {
+          parsedSplits =
+            typeof args.splits_json === "string" ? JSON.parse(args.splits_json) : args.splits_json || [];
+        } catch {
+          parsedSplits = [];
+        }
+        const splitPayload: SplitAcceptPayload = {
+          item: args.item || neededItem,
+          total_quantity_kg: Number(args.total_quantity_kg) || neededQuantity,
+          total_cost: Number(args.total_cost) || 0,
+          splits: parsedSplits,
+          rationale: args.rationale || `Split order across ${parsedSplits.length} sellers.`,
+        };
+        return {
+          action: "propose_split_accept",
+          split_payload: splitPayload,
+          rationale: splitPayload.rationale,
+        };
+      } else if (name === "send_counter") {
+        return {
+          action: "send_counter",
+          counter: {
+            item: args.item || neededItem,
+            quantity_kg: Number(args.counter_quantity_kg) || neededQuantity,
+            buyer_max_price_per_kg: Number(args.target_price_per_kg) || ceiling,
+            target_seller_id: args.seller_id,
+          },
+          reason: args.reason || "Counter-offer proposed to fit budget limits.",
+        };
+      }
+    }
   }
 
   return null;
@@ -236,93 +294,105 @@ export function evaluateOffersDeterministically(
   offers: OfferPayload[],
   neededItem: string,
   neededQuantity: number,
-  profile: RestaurantProfile,
+  profile: RestaurantProfile
 ): BuyerDecision {
-  if (!offers || offers.length === 0) {
+  const validOffers = offers.filter((o) => o.quantity_kg > 0);
+
+  if (validOffers.length === 0) {
     return {
       action: "reject",
-      reason: `No sellers available for ${neededItem}.`,
+      reason: `No sellers with available stock for ${neededItem}.`,
     };
   }
 
-  // Check unit price ceiling violation
-  const ceiling = profile.max_price_per_kg[neededItem] || 35;
-  const single = offers[0];
+  const ceiling = getBuyerCeiling(neededItem, profile.max_price_per_kg[neededItem]);
 
-  if (single.final_price_per_kg > ceiling) {
+  // Sort by lowest total price
+  const sortedOffers = [...validOffers].sort((a, b) => a.total_price - b.total_price);
+  const bestSingle = sortedOffers[0];
+
+  // Check unit price ceiling violation on best single offer
+  if (bestSingle.final_price_per_kg > ceiling) {
+    const counterQty = computeCounterQuantity(bestSingle.quantity_kg, neededQuantity, defaultBuyerNegotiationPolicy);
     return {
       action: "send_counter",
       counter: {
         item: neededItem,
-        quantity_kg: neededQuantity,
+        quantity_kg: counterQty,
         buyer_max_price_per_kg: ceiling,
+        target_seller_id: bestSingle.seller_id,
       },
-      reason: `Offered rate (₹${single.final_price_per_kg}/kg) exceeds price ceiling of ₹${ceiling}/kg. Countered with ceiling price.`,
+      reason: `Best offered rate (₹${bestSingle.final_price_per_kg}/kg) exceeds price ceiling of ₹${ceiling}/kg. Countered with ${counterQty} units to reach volume tier.`,
     };
   }
 
-  // Check substantial overspend
-  if (single.total_price > profile.per_transaction_cap * 1.5) {
-    const reducedQty = Math.floor(
-      profile.per_transaction_cap / single.final_price_per_kg,
-    );
+  // Check substantial overspend on single transaction cap
+  if (bestSingle.total_price > profile.per_transaction_cap * 1.5) {
+    const reducedQty = Math.max(1, Math.floor(profile.per_transaction_cap / bestSingle.final_price_per_kg));
     return {
       action: "send_counter",
       counter: {
         item: neededItem,
         quantity_kg: reducedQty,
         buyer_max_price_per_kg: ceiling,
+        target_seller_id: bestSingle.seller_id,
       },
-      reason: `Total deal amount ₹${single.total_price} is substantially over budget cap (₹${profile.per_transaction_cap}). Countering with ${reducedQty}kg.`,
+      reason: `Total deal amount ₹${bestSingle.total_price} is substantially over budget cap (₹${profile.per_transaction_cap}). Countering with ${reducedQty} units.`,
     };
   }
 
-  const sortedOffers = [...offers].sort(
-    (a, b) => a.total_price - b.total_price,
-  );
-  const bestSingle = sortedOffers[0];
-
+  // Split-deal evaluation across multi-sellers if advantageous
   let bestSplit: SplitAcceptPayload | null = null;
-  if (offers.length >= 2 && neededQuantity > 3) {
-    const splitQty1 = Math.ceil(neededQuantity * 0.6);
-    const splitQty2 = neededQuantity - splitQty1;
-    const seller1 = offers[0];
-    const seller2 = offers[1];
+  if (validOffers.length >= 2 && neededQuantity > 3) {
+    const seller1 = validOffers[0];
+    const seller2 = validOffers[1];
+    const s1Stock = seller1.quantity_kg || 10;
+    const s2Stock = seller2.quantity_kg || 10;
 
-    const cost1 = Number((seller1.final_price_per_kg * splitQty1).toFixed(2));
-    const cost2 = Number((seller2.final_price_per_kg * splitQty2).toFixed(2));
-    const splitTotal = Number((cost1 + cost2).toFixed(2));
+    let splitQty1 = Math.min(s1Stock, Math.ceil(neededQuantity * 0.6));
+    let splitQty2 = neededQuantity - splitQty1;
+    if (splitQty2 > s2Stock) {
+      splitQty2 = s2Stock;
+      splitQty1 = Math.min(s1Stock, neededQuantity - splitQty2);
+    }
 
-    if (splitTotal < bestSingle.total_price) {
-      bestSplit = {
-        item: neededItem,
-        total_quantity_kg: neededQuantity,
-        total_cost: splitTotal,
-        splits: [
-          {
-            seller_id: seller1.seller_id || "agent:seller:razor_pies",
-            item: neededItem,
-            quantity_kg: splitQty1,
-            unit_price: seller1.final_price_per_kg,
-            total_price: cost1,
-          },
-          {
-            seller_id: seller2.seller_id || "agent:seller:razorcery_1",
-            item: neededItem,
-            quantity_kg: splitQty2,
-            unit_price: seller2.final_price_per_kg,
-            total_price: cost2,
-          },
-        ],
-        rationale: `Split order (${splitQty1}u from ${seller1.seller_id} + ${splitQty2}u from ${seller2.seller_id}) yields total ₹${splitTotal}, saving ₹${Number((bestSingle.total_price - splitTotal).toFixed(2))} over single-vendor procurement.`,
-      };
+    if (splitQty1 + splitQty2 === neededQuantity && splitQty1 > 0 && splitQty2 > 0) {
+      const cost1 = Number((seller1.final_price_per_kg * splitQty1).toFixed(2));
+      const cost2 = Number((seller2.final_price_per_kg * splitQty2).toFixed(2));
+      const splitTotal = Number((cost1 + cost2).toFixed(2));
+
+      if (splitTotal < bestSingle.total_price) {
+        bestSplit = {
+          item: neededItem,
+          total_quantity_kg: neededQuantity,
+          total_cost: splitTotal,
+          splits: [
+            {
+              seller_id: seller1.seller_id || "agent:seller:razor_pies",
+              item: neededItem,
+              quantity_kg: splitQty1,
+              unit_price: seller1.final_price_per_kg,
+              total_price: cost1,
+            },
+            {
+              seller_id: seller2.seller_id || "agent:seller:razorcery_1",
+              item: neededItem,
+              quantity_kg: splitQty2,
+              unit_price: seller2.final_price_per_kg,
+              total_price: cost2,
+            },
+          ],
+          rationale: `Split order (${splitQty1}u from ${seller1.seller_id} + ${splitQty2}u from ${seller2.seller_id}) yields total ₹${splitTotal}, saving ₹${Number((bestSingle.total_price - splitTotal).toFixed(2))} over single-vendor procurement within verified seller stocks.`,
+        };
+      }
     }
   }
 
+  // Handle Upsell / Bundle Evaluation
   let acceptedUpsell: UpsellItem | undefined;
   let declinedUpsellReason: string | undefined;
 
-  for (const off of offers) {
+  for (const off of validOffers) {
     if (off.upsell_item) {
       const itemKey = off.upsell_item.item.toLowerCase().trim();
       const isItemInMenu = VALID_MENU_INGREDIENTS.has(itemKey);
@@ -330,12 +400,8 @@ export function evaluateOffersDeterministically(
       if (!isItemInMenu) {
         declinedUpsellReason = `Declined unsolicited upsell of "${off.upsell_item.item}" because it is not used in any RazorSlice pizza recipe.`;
       } else {
-        const upsellTotal =
-          off.upsell_item.quantity_kg * off.upsell_item.unit_price;
-        if (
-          bestSingle.total_price + upsellTotal <=
-          profile.per_transaction_cap
-        ) {
+        const upsellTotal = off.upsell_item.quantity_kg * off.upsell_item.unit_price;
+        if (bestSingle.total_price + upsellTotal <= profile.per_transaction_cap) {
           acceptedUpsell = off.upsell_item;
         } else {
           declinedUpsellReason = `Declined upsell of "${off.upsell_item.item}" to avoid exceeding transaction budget cap of ₹${profile.per_transaction_cap}.`;
@@ -366,10 +432,9 @@ export function evaluateOffersDeterministically(
 export async function buyerEvaluateOffer(
   offer: OfferPayload,
   profile: RestaurantProfile,
-  allOffers?: OfferPayload[],
+  allOffers?: OfferPayload[]
 ): Promise<BuyerDecision> {
-  const offersToCompare =
-    allOffers && allOffers.length > 0 ? allOffers : [offer];
+  const offersToCompare = allOffers && allOffers.length > 0 ? allOffers : [offer];
   const agentCards = InventoryStore.getAgentCards();
   const neededItem = offer.item;
   const neededQuantity = offer.quantity_kg;
@@ -384,23 +449,16 @@ export async function buyerEvaluateOffer(
           profile,
           agentCards,
           neededItem,
-          neededQuantity,
+          neededQuantity
         );
         if (decision) return decision;
       } catch (err: any) {
-        console.warn(
-          `[BuyerAgent] Gemini key #${i + 1} attempt failed: ${err.message}`,
-        );
+        console.warn(`[BuyerAgent] Gemini key #${i + 1} attempt failed: ${err.message}`);
       }
     }
   }
 
-  return evaluateOffersDeterministically(
-    offersToCompare,
-    neededItem,
-    neededQuantity,
-    profile,
-  );
+  return evaluateOffersDeterministically(offersToCompare, neededItem, neededQuantity, profile);
 }
 
 export class BuyerAgent {
