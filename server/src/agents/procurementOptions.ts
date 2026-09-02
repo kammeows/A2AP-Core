@@ -1,4 +1,5 @@
 import { CachedSellerCatalog, BuyerCatalogService } from "./buyerAgent.js";
+import { normalizeIngredientKey } from "./negotiationPolicy.js";
 
 export interface InventoryEvent {
   item: string;
@@ -43,11 +44,11 @@ export function computeConsumptionRate(
   lookbackTicks: number = LOOKBACK_TICKS
 ): number {
   if (!recentEvents || recentEvents.length === 0) return 0;
-  const norm = item.toLowerCase().trim().replace(/s$/, "");
+  const norm = normalizeIngredientKey(item);
   const minTick = Math.max(0, currentTick - lookbackTicks);
 
   const windowEvents = recentEvents.filter((e) => {
-    const eNorm = e.item.toLowerCase().trim().replace(/s$/, "");
+    const eNorm = normalizeIngredientKey(e.item);
     return eNorm === norm && e.tick >= minTick;
   });
 
@@ -92,18 +93,17 @@ export function costLookup(
   let bestUnitPrice = 0;
   let bestDiscount = 0;
   let bestSellerId = matching[0].seller_id;
-
-  const norm = item.toLowerCase().trim().replace(/s$/, "");
+  const norm = normalizeIngredientKey(item);
 
   for (const seller of matching) {
     const baseEntry = Object.entries(seller.base_prices).find(
-      ([k]) => k.toLowerCase() === item.toLowerCase() || k.toLowerCase().replace(/s$/, "") === norm
+      ([k]) => normalizeIngredientKey(k) === norm || k.toLowerCase() === item.toLowerCase()
     );
     const basePrice = baseEntry ? baseEntry[1].base_price : 10;
 
     const tiers = seller.discount_tiers
       ? Object.entries(seller.discount_tiers).find(
-          ([k]) => k.toLowerCase() === item.toLowerCase() || k.toLowerCase().replace(/s$/, "") === norm
+          ([k]) => normalizeIngredientKey(k) === norm || k.toLowerCase() === item.toLowerCase()
         )?.[1] || []
       : [];
 
@@ -142,7 +142,7 @@ export function computeProcurementOptions(
   maxOverbuyMultiplier: number = MAX_OVERBUY_MULTIPLIER,
   safeWaitTicks: number = SAFE_WAIT_TICKS
 ): ProcurementOption[] {
-  const norm = item.toLowerCase().trim().replace(/s$/, "");
+  const norm = normalizeIngredientKey(item);
   const currentStock = live.stock[item] ?? live.stock[norm] ?? 0;
   const targetStock = live.target[item] ?? live.target[norm] ?? currentStock;
   const safetyFloor = live.safetyFloor[item] ?? live.safetyFloor[norm] ?? 5;
@@ -184,7 +184,7 @@ export function computeProcurementOptions(
   for (const seller of matching) {
     const tiers = seller.discount_tiers
       ? Object.entries(seller.discount_tiers).find(
-          ([k]) => k.toLowerCase() === item.toLowerCase() || k.toLowerCase().replace(/s$/, "") === norm
+          ([k]) => normalizeIngredientKey(k) === norm || k.toLowerCase() === item.toLowerCase()
         )?.[1] || []
       : [];
 

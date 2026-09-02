@@ -9,6 +9,7 @@ import {
   SellerOffer,
 } from "./pricingEngine.js";
 import { SELLER_SYSTEM_PROMPT } from "./prompts.js";
+import { normalizeIngredientKey } from "./negotiationPolicy.js";
 
 try {
   const __filename = fileURLToPath(import.meta.url);
@@ -334,7 +335,7 @@ export function generateSellerRationale(
     return `${sellerName}: Order of ${offeredQty}u ${item} qualifies for our ${discountPct}% volume discount tier (saving ₹${savingsPerUnit}/u off ₹${basePrice.toFixed(2)} list price, net ₹${finalPrice.toFixed(2)}/unit). Fully backed by ${stock}u on-hand inventory.`;
   }
 
-  const norm = item.toLowerCase().trim().replace(/s$/, "");
+  const norm = normalizeIngredientKey(item);
   const nextTier = norm === "flour" ? (sellerName.includes("RazorPies") ? 10 : 5) : norm === "cheese" ? 5 : norm === "tomato" || norm === "onion" ? 4 : 3;
   const unitsNeededForTier = Math.max(1, nextTier - offeredQty);
 

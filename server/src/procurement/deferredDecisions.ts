@@ -1,4 +1,5 @@
 import { LivePantryState } from "../agents/procurementOptions.js";
+import { normalizeIngredientKey } from "../agents/negotiationPolicy.js";
 
 export interface DeferredDecision {
   item: string;
@@ -17,7 +18,7 @@ export class DeferredDecisionStore {
   private static deferredMap = new Map<string, DeferredDecision>();
 
   static setDeferred(decision: DeferredDecision): void {
-    const norm = decision.item.toLowerCase().trim().replace(/s$/, "");
+    const norm = normalizeIngredientKey(decision.item);
     DeferredDecisionStore.deferredMap.set(norm, {
       ...decision,
       created_at: decision.created_at || new Date().toISOString(),
@@ -25,12 +26,12 @@ export class DeferredDecisionStore {
   }
 
   static getDeferred(item: string): DeferredDecision | null {
-    const norm = item.toLowerCase().trim().replace(/s$/, "");
+    const norm = normalizeIngredientKey(item);
     return DeferredDecisionStore.deferredMap.get(norm) || null;
   }
 
   static deleteDeferred(item: string): boolean {
-    const norm = item.toLowerCase().trim().replace(/s$/, "");
+    const norm = normalizeIngredientKey(item);
     return DeferredDecisionStore.deferredMap.delete(norm);
   }
 
@@ -70,7 +71,7 @@ export function checkDeferredDecisions(
 
   for (const decision of all) {
     const item = decision.item;
-    const norm = item.toLowerCase().trim().replace(/s$/, "");
+    const norm = normalizeIngredientKey(item);
     const currentStock = live.stock[item] ?? live.stock[norm] ?? 0;
     const safetyFloor = live.safetyFloor[item] ?? live.safetyFloor[norm] ?? 0;
 

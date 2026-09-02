@@ -352,4 +352,25 @@ describe("Multi-Seller Agent Network & Volume Negotiation", () => {
     assert.equal((offerMsg.payload as any).quantity_kg, 2);
     assert.equal((offerMsg.payload as any).stock_limited, true);
   });
+
+  test("14. Buyer target price for tomatoes is anchored below wholesale catalog rate (never exceeding ₹3.00/u)", async () => {
+    const threadId = "test_tomato_target_price_" + Date.now();
+    const result = await runNegotiation({
+      threadId,
+      scenario: "custom",
+      itemToProcure: "tomatoes",
+      quantityNeeded: 1,
+    });
+
+    const thread = ThreadStore.getThread(threadId);
+    const rfqMsgs = thread.filter((m) => m.type === "RFQ");
+    assert.ok(rfqMsgs.length > 0);
+
+    for (const rfq of rfqMsgs) {
+      const targetPrice = (rfq.payload as any).target_price_per_unit;
+      // Catalog rate for tomatoes is ₹3.00/unit, target price must be below ₹3.00 (e.g. ₹2.70), never ₹3.50
+      assert.ok(targetPrice < 3.0, `Target price ₹${targetPrice} must be below catalog base price ₹3.00`);
+      assert.equal(targetPrice, 2.7);
+    }
+  });
 });

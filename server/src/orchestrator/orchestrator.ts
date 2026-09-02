@@ -6,6 +6,8 @@ import {
   evaluateOfferAgainstCeiling,
   computeCounterQuantity,
   getBuyerCeiling,
+  getBuyerTargetPrice,
+  normalizeIngredientKey,
   defaultBuyerNegotiationPolicy,
 } from "../agents/negotiationPolicy.js";
 import { razorpayClient } from "../payments/razorpayClient.js";
@@ -235,15 +237,14 @@ export async function runNegotiation(
   for (const it of itemsList) {
     const item = it.item;
     const deficitQuantity = it.quantity;
-    const norm = item.toLowerCase().trim().replace(/s$/, "");
+    const norm = normalizeIngredientKey(item);
 
-    // Strategic buyer target price below catalog list rates
-    let targetPricePerUnit = 3.5;
-    if (norm === "cheese") targetPricePerUnit = 3.2;
-    else if (norm === "flour") targetPricePerUnit = 5.0;
-    else if (norm === "tomato") targetPricePerUnit = item.toLowerCase() === "tomato" ? 28.0 : 2.8;
-    else if (norm === "onion") targetPricePerUnit = 3.2;
-    else if (norm === "milk") targetPricePerUnit = 7.5;
+    // Strategic buyer target price anchored below wholesale list rates (guaranteed <= catalog base price)
+    let targetPricePerUnit = getBuyerTargetPrice(
+      item,
+      scenario,
+      params.customRfq?.target_price_per_unit
+    );
 
     const negotiationCeiling = getBuyerCeiling(item, policy.per_unit_price_ceiling[item]);
 

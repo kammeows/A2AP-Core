@@ -16,6 +16,7 @@ import {
   evaluateOfferAgainstCeiling,
   computeCounterQuantity,
   getBuyerCeiling,
+  normalizeIngredientKey,
   defaultBuyerNegotiationPolicy,
 } from "./negotiationPolicy.js";
 import {
@@ -516,13 +517,13 @@ export class BuyerCatalogService {
    */
   static getCachedSellersForItem(item: string): CachedSellerCatalog[] {
     const catalogs = BuyerCatalogService.getCachedCatalogs();
-    const norm = item.toLowerCase().trim().replace(/s$/, "");
+    const norm = normalizeIngredientKey(item);
     return catalogs.filter((c) =>
       c.stocked_items.some(
         (si) =>
+          normalizeIngredientKey(si) === norm ||
           si.toLowerCase().includes(item.toLowerCase()) ||
-          item.toLowerCase().includes(si.toLowerCase()) ||
-          si.toLowerCase().replace(/s$/, "") === norm
+          item.toLowerCase().includes(si.toLowerCase())
       )
     );
   }
@@ -541,9 +542,9 @@ export class BuyerCatalogService {
     );
     if (!seller || !seller.discount_tiers) return [];
 
-    const norm = item.toLowerCase().trim().replace(/s$/, "");
+    const norm = normalizeIngredientKey(item);
     const tierKey = Object.keys(seller.discount_tiers).find(
-      (k) => k.toLowerCase() === item.toLowerCase() || k.toLowerCase().replace(/s$/, "") === norm
+      (k) => normalizeIngredientKey(k) === norm || k.toLowerCase() === item.toLowerCase()
     );
     return tierKey ? seller.discount_tiers[tierKey] : [];
   }
