@@ -256,6 +256,21 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
     "agent:seller:razorcery_2": { milk: 15, tomatoes: 15, onions: 15 },
   });
 
+  const buyerStockRef = useRef<BuyerPantry>(buyerStock);
+  const orderQueueRef = useRef<CustomerOrder[]>(orderQueue);
+  const waitingForProcurementOrderRef = useRef<CustomerOrder | null>(null);
+  const wasAutoSimulatingRef = useRef<boolean>(false);
+  const isFulfillingOrderRef = useRef<boolean>(false);
+  const [isFulfillingOrder, setIsFulfillingOrder] = useState<boolean>(false);
+
+  useEffect(() => {
+    buyerStockRef.current = buyerStock;
+  }, [buyerStock]);
+
+  useEffect(() => {
+    orderQueueRef.current = orderQueue;
+  }, [orderQueue]);
+
   const normalizeKey = (name: string): keyof BuyerPantry => {
     const s = (name || "").toLowerCase().trim();
     if (s.startsWith("flour")) return "flour";
@@ -314,17 +329,16 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
       seller: string;
     }> = [];
 
-    // 1. Increment Buyer Pantry Stock
-    setBuyerStock((prev) => {
-      const next = { ...prev };
-      for (const p of purchasedList) {
-        const pantryKey = normalizeKey(p.item);
-        if (pantryKey in next && typeof next[pantryKey] === "number") {
-          next[pantryKey] = (next[pantryKey] as number) + p.quantity;
-        }
+    // 1. Increment Buyer Pantry Stock synchronously in ref and React state
+    const nextBuyerStock = { ...buyerStockRef.current };
+    for (const p of purchasedList) {
+      const pantryKey = normalizeKey(p.item);
+      if (pantryKey in nextBuyerStock && typeof nextBuyerStock[pantryKey] === "number") {
+        nextBuyerStock[pantryKey] = (nextBuyerStock[pantryKey] as number) + p.quantity;
       }
-      return next;
-    });
+    }
+    buyerStockRef.current = nextBuyerStock;
+    setBuyerStock(nextBuyerStock);
 
     // 2. Decrement Seller Stock in real-time (synchronously in ref and asynchronously in React state)
     for (const p of purchasedList) {
@@ -479,6 +493,31 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
 
       if (purchasedList.length > 0) {
         applyPurchasedItems(purchasedList, eventKey);
+
+        // Only resume if this exact customer order was blocked and waiting for these ingredients!
+        if (waitingForProcurementOrderRef.current) {
+          const waitingOrder = waitingForProcurementOrderRef.current;
+          waitingForProcurementOrderRef.current = null;
+
+          addLog(
+            "order_taken",
+            `⚡ Resuming Order #${waitingOrder.id} (${waitingOrder.name})`,
+            `Restocked ingredients delivered to kitchen! Completing preparation of this order...`,
+            waitingOrder.id
+          );
+
+          setTimeout(() => {
+            processNextOrder();
+            if (wasAutoSimulatingRef.current) {
+              setIsAutoSimulating(true);
+              wasAutoSimulatingRef.current = false;
+            }
+          }, 800);
+        } else if (wasAutoSimulatingRef.current) {
+          // If auto-simulate was paused solely for background par replenishment
+          setIsAutoSimulating(true);
+          wasAutoSimulatingRef.current = false;
+        }
       }
     }
   }, [latestResult]);
@@ -659,104 +698,215 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
 
   // Process next order in queue
   const processNextOrder = async (): Promise<boolean> => {
-    if (orderQueue.length === 0) {
+    if (isFulfillingOrderRef.current) return false;
+    isFulfillingOrderRef.current = true;
+    setIsFulfillingOrder(true);
+
+    try {
+      const currentQueue = orderQueueRef.current;
+      if (currentQueue.length === 0) {
+        addLog(
+          "info",
+          "Queue Complete",
+          "All customer orders have been successfully fulfilled & served!",
+        );
+        setIsAutoSimulating(false);
+        return false;
+      }
+
+      const currentOrder = currentQueue[0];
+      setActiveProcessingOrder(currentOrder);
+
       addLog(
-        "info",
-        "Queue Complete",
-        "All customer orders have been successfully fulfilled & served!",
+        "order_taken",
+        `Customer Order #${currentOrder.id} (${currentOrder.name})`,
+        `Customer arrived. Recipe: ${Object.entries(currentOrder.recipe)
+          .map(([k, v]) => `${v} ${k}`)
+          .join(", ")}. Checking kitchen pantry...`,
+        currentOrder.id,
       );
-      setIsAutoSimulating(false);
-      return false;
-    }
 
-    const currentOrder = orderQueue[0];
-    setActiveProcessingOrder(currentOrder);
+      let canBakeImmediately = true;
+      const immediateDeficits: Array<{ item: string; quantity: number }> = [];
 
-    addLog(
-      "order_taken",
-      `Customer Order #${currentOrder.id} (${currentOrder.name})`,
-      `Customer arrived. Recipe: ${Object.entries(currentOrder.recipe)
-        .map(([k, v]) => `${v} ${k}`)
-        .join(", ")}. Checking kitchen pantry...`,
-      currentOrder.id,
-    );
-
-    let canBakeImmediately = true;
-    const immediateDeficits: Array<{ item: string; quantity: number }> = [];
-
-    (Object.keys(currentOrder.recipe) as Array<keyof BuyerPantry>).forEach(
-      (k) => {
-        if (k === "targetStock") return;
-        const needed = currentOrder.recipe[k] || 0;
-        const current = buyerStock[k] || 0;
-        if (needed > current) {
-          canBakeImmediately = false;
-          immediateDeficits.push({ item: k, quantity: needed - current });
-        }
-      },
-    );
-
-    if (canBakeImmediately) {
-      await new Promise((r) => setTimeout(r, 550));
-
-      simulationTickRef.current += 1;
-      const currentTick = simulationTickRef.current;
-
-      const updatedStock = { ...buyerStock };
       (Object.keys(currentOrder.recipe) as Array<keyof BuyerPantry>).forEach(
         (k) => {
-          if (k !== "targetStock" && currentOrder.recipe[k]) {
-            const used = currentOrder.recipe[k] as number;
-            updatedStock[k] = Math.max(0, (updatedStock[k] as number) - used);
-            inventoryEventsRef.current.push({
-              item: k,
-              tick: currentTick,
-              quantityUsed: used,
-            });
+          if (k === "targetStock") return;
+          const needed = currentOrder.recipe[k] || 0;
+          const current = buyerStockRef.current[k] || 0;
+          if (needed > current) {
+            canBakeImmediately = false;
+            immediateDeficits.push({ item: k, quantity: needed - current });
           }
         },
       );
-      setBuyerStock(updatedStock);
 
-      addLog(
-        "inventory_event",
-        `[INVENTORY_EVENT] Baked ${currentOrder.name} (-${Object.entries(
-          currentOrder.recipe,
-        )
-          .map(([k, v]) => `${v} ${k}`)
-          .join(", -")})`,
-        `Pantry updated: Flour=${updatedStock.flour}, Cheese=${updatedStock.cheese}, Tomatoes=${updatedStock.tomatoes}, Onions=${updatedStock.onions}, Milk=${updatedStock.milk}`,
-        currentOrder.id,
-      );
+      if (canBakeImmediately) {
+        await new Promise((r) => setTimeout(r, 550));
 
-      const servedOrder = { ...currentOrder, status: "served" as const };
-      setOrderQueue((prev) => prev.slice(1));
-      setCompletedOrders((prev) => [servedOrder, ...prev]);
+        simulationTickRef.current += 1;
+        const currentTick = simulationTickRef.current;
 
-      addLog(
-        "order_served",
-        `✅ Order #${currentOrder.id} (${currentOrder.name}) SERVED!`,
-        `Delivered to customer! Advancing next order in queue.`,
-        currentOrder.id,
-      );
-
-      const proactiveReplenishment = checkReorderTriggers(updatedStock);
-      if (proactiveReplenishment.length > 0) {
-        proactiveReplenishment.forEach((i) =>
-          procurementInFlightRef.current.add(i.item),
+        const updatedStock = { ...buyerStockRef.current };
+        (Object.keys(currentOrder.recipe) as Array<keyof BuyerPantry>).forEach(
+          (k) => {
+            if (k !== "targetStock" && currentOrder.recipe[k]) {
+              const used = currentOrder.recipe[k] as number;
+              updatedStock[k] = Math.max(0, (updatedStock[k] as number) - used);
+              inventoryEventsRef.current.push({
+                item: k,
+                tick: currentTick,
+                quantityUsed: used,
+              });
+            }
+          },
         );
+        buyerStockRef.current = updatedStock;
+        setBuyerStock(updatedStock);
 
         addLog(
-          "par_trigger",
-          `⚠️ Par Stock Reorder Triggered`,
-          `Procuring for: ${proactiveReplenishment.map((i) => `${i.item} (+${i.quantity}u)`).join(", ")} to reach target inventory level...`,
+          "inventory_event",
+          `[INVENTORY_EVENT] Baked ${currentOrder.name} (-${Object.entries(
+            currentOrder.recipe,
+          )
+            .map(([k, v]) => `${v} ${k}`)
+            .join(", -")})`,
+          `Pantry updated: Flour=${updatedStock.flour}, Cheese=${updatedStock.cheese}, Tomatoes=${updatedStock.tomatoes}, Onions=${updatedStock.onions}, Milk=${updatedStock.milk}`,
           currentOrder.id,
         );
 
+        const servedOrder = { ...currentOrder, status: "served" as const };
+        setOrderQueue((prev) => {
+          const nextQ = prev.slice(1);
+          orderQueueRef.current = nextQ;
+          return nextQ;
+        });
+        setCompletedOrders((prev) => [servedOrder, ...prev]);
+
+        addLog(
+          "order_served",
+          `✅ Order #${currentOrder.id} (${currentOrder.name}) SERVED!`,
+          `Delivered to customer! Advancing next order in queue.`,
+          currentOrder.id,
+        );
+
+        const proactiveReplenishment = checkReorderTriggers(updatedStock);
+        if (proactiveReplenishment.length > 0) {
+          proactiveReplenishment.forEach((i) =>
+            procurementInFlightRef.current.add(i.item),
+          );
+
+          addLog(
+            "par_trigger",
+            `⚠️ Par Stock Reorder Triggered`,
+            `Procuring for: ${proactiveReplenishment.map((i) => `${i.item} (+${i.quantity}u)`).join(", ")} to reach target inventory level...`,
+            currentOrder.id,
+          );
+
+          addLog(
+            "a2a_procure",
+            `A2A Procurement: ${proactiveReplenishment.map((i) => `+${i.quantity} ${i.item}`).join(", ")}`,
+            `Broadcasting concurrent RFQs with target prices to RazorPies, Razorcery-1, and Razorcery-2...`,
+            currentOrder.id,
+          );
+
+          const currentSellerInventories = JSON.parse(
+            JSON.stringify(sellerInventoriesRef.current),
+          );
+
+          try {
+            const res = await onRunAi("custom", {
+              itemsToProcure: proactiveReplenishment,
+              buyerStockKg: updatedStock.flour,
+              sellerStockKg:
+                sellerInventoriesRef.current["agent:seller:razor_pies"].cheese +
+                sellerInventoriesRef.current["agent:seller:razorcery_1"].flour +
+                sellerInventoriesRef.current["agent:seller:razorcery_2"].milk,
+              buyerTargetStockKg: TARGET_STOCK_LEVELS.flour,
+              sellerInventories: currentSellerInventories,
+            });
+            if (
+              res &&
+              (res.status === "CONFIRMED" ||
+                res.status === "RENEGOTIATED_AND_CONFIRMED") &&
+              res.purchased_items &&
+              res.purchased_items.length > 0
+            ) {
+              const eventKey = `${res.thread_id || "direct"}_${res.status}_${res.order_id || ""}`;
+              applyPurchasedItems(res.purchased_items, eventKey);
+            } else if (res && res.status === "AWAITING_CONFIRMATION") {
+              if (isAutoSimulating) {
+                wasAutoSimulatingRef.current = true;
+              }
+              setIsAutoSimulating(false);
+              addLog(
+                "par_trigger",
+                `⏸️ Partial Mode: Awaiting Restaurant Manager Approval`,
+                `Par replenishment deal proposed for ₹${res.total_amount || res.pending_offer?.total_price || ""}. Auto-simulation paused waiting for authorization on mobile device.`,
+                currentOrder.id,
+              );
+              setActiveProcessingOrder(null);
+              return false;
+            }
+          } finally {
+            proactiveReplenishment.forEach((i) =>
+              procurementInFlightRef.current.delete(i.item),
+            );
+          }
+        }
+
+        setActiveProcessingOrder(null);
+        return true;
+      } else {
+        addLog(
+          "par_trigger",
+          `⚠️ Immediate Stock Shortage on Order #${currentOrder.id}`,
+          `Missing: ${immediateDeficits.map((d) => `${d.quantity}u ${d.item}`).join(", ")}. Triggering Look-Ahead A2A Procurement up to target level...`,
+          currentOrder.id,
+        );
+
+        const itemsToProcure: Array<{ item: string; quantity: number }> = [];
+        const keys: Array<keyof Omit<BuyerPantry, "targetStock">> = [
+          "flour",
+          "cheese",
+          "tomatoes",
+          "onions",
+          "milk",
+        ];
+
+        for (const k of keys) {
+          if (procurementInFlightRef.current.has(k)) continue;
+          const current = buyerStockRef.current[k] ?? 0;
+          const neededForRecipe = currentOrder.recipe[k] || 0;
+          const reorderPoint = PAR_STOCK_LEVELS[k];
+
+          if (current < neededForRecipe || current < reorderPoint) {
+            const decision = evaluateProcurementDecision(k, buyerStockRef.current);
+            const qty = Math.max(neededForRecipe - current, decision.quantity);
+            if (qty > 0) {
+              itemsToProcure.push({
+                item: k,
+                quantity: qty,
+              });
+            }
+          }
+        }
+
+        if (itemsToProcure.length === 0) {
+          for (const d of immediateDeficits) {
+            itemsToProcure.push({
+              item: d.item,
+              quantity: d.quantity,
+            });
+          }
+        }
+
+        itemsToProcure.forEach((i) => procurementInFlightRef.current.add(i.item));
+
         addLog(
           "a2a_procure",
-          `A2A Procurement: ${proactiveReplenishment.map((i) => `+${i.quantity} ${i.item}`).join(", ")}`,
-          `Broadcasting concurrent RFQs with target prices to RazorPies, Razorcery-1, and Razorcery-2...`,
+          `Broadcasting Concurrent RFQs`,
+          `Procuring ${itemsToProcure.map((i) => `${i.quantity}u ${i.item}`).join(", ")} across A2A sellers with 2-round volume negotiation...`,
           currentOrder.id,
         );
 
@@ -764,10 +914,11 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
           JSON.stringify(sellerInventoriesRef.current),
         );
 
+        let res: NegotiationResult | null = null;
         try {
-          const res = await onRunAi("custom", {
-            itemsToProcure: proactiveReplenishment,
-            buyerStockKg: updatedStock.flour,
+          res = await onRunAi("custom", {
+            itemsToProcure,
+            buyerStockKg: buyerStockRef.current.flour,
             sellerStockKg:
               sellerInventoriesRef.current["agent:seller:razor_pies"].cheese +
               sellerInventoriesRef.current["agent:seller:razorcery_1"].flour +
@@ -784,121 +935,21 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
           ) {
             const eventKey = `${res.thread_id || "direct"}_${res.status}_${res.order_id || ""}`;
             applyPurchasedItems(res.purchased_items, eventKey);
-          } else if (res && res.status === "AWAITING_CONFIRMATION") {
-            setIsAutoSimulating(false);
-            addLog(
-              "par_trigger",
-              `⏸️ Partial Mode: Awaiting Restaurant Manager Approval`,
-              `Par replenishment deal proposed for ₹${res.total_amount || res.pending_offer?.total_price || ""}. Auto-simulation paused waiting for authorization on mobile device.`,
-              currentOrder.id,
-            );
-            setActiveProcessingOrder(null);
-            return false;
           }
         } finally {
-          proactiveReplenishment.forEach((i) =>
+          itemsToProcure.forEach((i) =>
             procurementInFlightRef.current.delete(i.item),
           );
         }
-      }
 
-      setActiveProcessingOrder(null);
-      return true;
-    } else {
-      addLog(
-        "par_trigger",
-        `⚠️ Immediate Stock Shortage on Order #${currentOrder.id}`,
-        `Missing: ${immediateDeficits.map((d) => `${d.quantity}u ${d.item}`).join(", ")}. Triggering Look-Ahead A2A Procurement up to target level...`,
-        currentOrder.id,
-      );
-
-      const itemsToProcure: Array<{ item: string; quantity: number }> = [];
-      const keys: Array<keyof Omit<BuyerPantry, "targetStock">> = [
-        "flour",
-        "cheese",
-        "tomatoes",
-        "onions",
-        "milk",
-      ];
-
-      for (const k of keys) {
-        if (procurementInFlightRef.current.has(k)) continue;
-        const current = buyerStock[k] ?? 0;
-        const neededForRecipe = currentOrder.recipe[k] || 0;
-        const reorderPoint = PAR_STOCK_LEVELS[k];
-        const target = TARGET_STOCK_LEVELS[k] ?? reorderPoint;
-
-        if (current < neededForRecipe || current < reorderPoint) {
-          const decision = evaluateProcurementDecision(k, buyerStock);
-          const qty = Math.max(neededForRecipe - current, decision.quantity);
-          if (qty > 0) {
-            itemsToProcure.push({
-              item: k,
-              quantity: qty,
-            });
-          }
-        }
-      }
-
-      if (itemsToProcure.length === 0) {
-        for (const d of immediateDeficits) {
-          itemsToProcure.push({
-            item: d.item,
-            quantity: d.quantity,
-          });
-        }
-      }
-
-      itemsToProcure.forEach((i) => procurementInFlightRef.current.add(i.item));
-
-      addLog(
-        "a2a_procure",
-        `Broadcasting Concurrent RFQs`,
-        `Procuring ${itemsToProcure.map((i) => `${i.quantity}u ${i.item}`).join(", ")} across A2A sellers with 2-round volume negotiation...`,
-        currentOrder.id,
-      );
-
-      const currentSellerInventories = JSON.parse(
-        JSON.stringify(sellerInventoriesRef.current),
-      );
-
-      let res: NegotiationResult | null = null;
-      try {
-        res = await onRunAi("custom", {
-          itemsToProcure,
-          buyerStockKg: buyerStock.flour,
-          sellerStockKg:
-            sellerInventoriesRef.current["agent:seller:razor_pies"].cheese +
-            sellerInventoriesRef.current["agent:seller:razorcery_1"].flour +
-            sellerInventoriesRef.current["agent:seller:razorcery_2"].milk,
-          buyerTargetStockKg: TARGET_STOCK_LEVELS.flour,
-          sellerInventories: currentSellerInventories,
-        });
         if (
           res &&
           (res.status === "CONFIRMED" ||
-            res.status === "RENEGOTIATED_AND_CONFIRMED") &&
-          res.purchased_items &&
-          res.purchased_items.length > 0
+            res.status === "RENEGOTIATED_AND_CONFIRMED")
         ) {
-          const eventKey = `${res.thread_id || "direct"}_${res.status}_${res.order_id || ""}`;
-          applyPurchasedItems(res.purchased_items, eventKey);
-        }
-      } finally {
-        itemsToProcure.forEach((i) =>
-          procurementInFlightRef.current.delete(i.item),
-        );
-      }
+          await new Promise((r) => setTimeout(r, 650));
 
-      if (
-        res &&
-        (res.status === "CONFIRMED" ||
-          res.status === "RENEGOTIATED_AND_CONFIRMED")
-      ) {
-        await new Promise((r) => setTimeout(r, 650));
-
-        setBuyerStock((prev) => {
-          const next = { ...prev };
+          const next = { ...buyerStockRef.current };
           (
             Object.keys(currentOrder.recipe) as Array<keyof BuyerPantry>
           ).forEach((k) => {
@@ -909,43 +960,55 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
               );
             }
           });
-          return next;
-        });
+          buyerStockRef.current = next;
+          setBuyerStock(next);
 
-        const servedOrder = { ...currentOrder, status: "served" as const };
-        setOrderQueue((prev) => prev.slice(1));
-        setCompletedOrders((prev) => [servedOrder, ...prev]);
-        setActiveProcessingOrder(null);
+          const servedOrder = { ...currentOrder, status: "served" as const };
+          setOrderQueue((prev) => {
+            const nextQ = prev.slice(1);
+            orderQueueRef.current = nextQ;
+            return nextQ;
+          });
+          setCompletedOrders((prev) => [servedOrder, ...prev]);
+          setActiveProcessingOrder(null);
 
-        addLog(
-          "order_served",
-          `✅ Order #${currentOrder.id} (${currentOrder.name}) SERVED!`,
-          `Freshly baked with restocked ingredients and served!`,
-          currentOrder.id,
-        );
+          addLog(
+            "order_served",
+            `✅ Order #${currentOrder.id} (${currentOrder.name}) SERVED!`,
+            `Freshly baked with restocked ingredients and served!`,
+            currentOrder.id,
+          );
 
-        return true;
-      } else if (res && res.status === "AWAITING_CONFIRMATION") {
-        addLog(
-          "par_trigger",
-          `⏸️ Partial Mode: Awaiting Restaurant Manager Approval`,
-          `Order #${currentOrder.id} (${currentOrder.name}) is on hold. Negotiated procurement of ${itemsToProcure.map((i) => `${i.quantity}u ${i.item}`).join(", ")} for ₹${res.total_amount || res.pending_offer?.total_price || ""} requires mobile confirmation before payment & delivery.`,
-          currentOrder.id,
-        );
-        setIsAutoSimulating(false);
-        setActiveProcessingOrder(null);
-        return false;
-      } else {
-        addLog(
-          "par_trigger",
-          `Procurement Paused / Policy Hold`,
-          `Order #${currentOrder.id} paused pending manager authorization.`,
-          currentOrder.id,
-        );
-        setIsAutoSimulating(false);
-        setActiveProcessingOrder(null);
-        return false;
+          return true;
+        } else if (res && res.status === "AWAITING_CONFIRMATION") {
+          waitingForProcurementOrderRef.current = currentOrder;
+          if (isAutoSimulating) {
+            wasAutoSimulatingRef.current = true;
+          }
+          addLog(
+            "par_trigger",
+            `⏸️ Partial Mode: Awaiting Restaurant Manager Approval`,
+            `Order #${currentOrder.id} (${currentOrder.name}) is on hold. Negotiated procurement of ${itemsToProcure.map((i) => `${i.quantity}u ${i.item}`).join(", ")} for ₹${res.total_amount || res.pending_offer?.total_price || ""} requires mobile confirmation before payment & delivery.`,
+            currentOrder.id,
+          );
+          setIsAutoSimulating(false);
+          setActiveProcessingOrder(null);
+          return false;
+        } else {
+          addLog(
+            "par_trigger",
+            `Procurement Paused / Policy Hold`,
+            `Order #${currentOrder.id} paused pending manager authorization.`,
+            currentOrder.id,
+          );
+          setIsAutoSimulating(false);
+          setActiveProcessingOrder(null);
+          return false;
+        }
       }
+    } finally {
+      isFulfillingOrderRef.current = false;
+      setIsFulfillingOrder(false);
     }
   };
 
@@ -969,6 +1032,9 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
     procurementInFlightRef.current.clear();
     simulationTickRef.current = 0;
     inventoryEventsRef.current = [];
+    waitingForProcurementOrderRef.current = null;
+    wasAutoSimulatingRef.current = false;
+    setIsAutoSimulating(false);
 
     if (preset === "default") {
       sellerInventoriesRef.current = {
@@ -2646,7 +2712,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
           {/* Step Next Order Button */}
           <button
             onClick={() => processNextOrder()}
-            disabled={isRunning || orderQueue.length === 0 || isAutoSimulating}
+            disabled={isRunning || orderQueue.length === 0 || isAutoSimulating || isFulfillingOrder}
             style={{
               display: "inline-flex",
               alignItems: "center",
@@ -2654,7 +2720,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
               padding: "0.55rem 1rem",
               borderRadius: 8,
               background:
-                isRunning || orderQueue.length === 0 || isAutoSimulating
+                isRunning || orderQueue.length === 0 || isAutoSimulating || isFulfillingOrder
                   ? "#334155"
                   : "rgba(255, 255, 255, 0.1)",
               border: "1px solid rgba(255, 255, 255, 0.2)",
@@ -2662,13 +2728,22 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
               fontSize: "0.78rem",
               fontWeight: 700,
               cursor:
-                isRunning || orderQueue.length === 0 || isAutoSimulating
+                isRunning || orderQueue.length === 0 || isAutoSimulating || isFulfillingOrder
                   ? "not-allowed"
                   : "pointer",
             }}
           >
-            <ArrowRight size={14} />
-            <span>Fulfill Next Order</span>
+            {isFulfillingOrder ? (
+              <>
+                <Clock size={14} />
+                <span>Baking & Serving...</span>
+              </>
+            ) : (
+              <>
+                <ArrowRight size={14} />
+                <span>Fulfill Next Order</span>
+              </>
+            )}
           </button>
 
           {/* Auto-Simulate Toggle Button */}
