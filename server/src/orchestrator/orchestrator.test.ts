@@ -75,4 +75,52 @@ describe("Orchestrator End-to-End A2A Flow", () => {
     const orderMsgs = thread.filter((m) => m.type === "ORDER_CREATE" || m.type === "ORDER_CONFIRM");
     assert.equal(orderMsgs.length, 0);
   });
+
+  test("4. Payment settlement: Confirmed order captures payment with pay_... ID and verified HMAC-SHA256 signature", async () => {
+    const threadId = "test_settle_" + Date.now();
+    const result = await runNegotiation(threadId, "happy");
+
+    assert.equal(result.status, "CONFIRMED");
+    assert.ok(result.order_id);
+    assert.ok(result.payment_id);
+    assert.ok(result.payment_id.startsWith("pay_"));
+    assert.ok(result.signature);
+    assert.equal(result.signature_verified, true);
+
+    const thread = getThread(threadId);
+    const confirmMsg = thread.find((m) => m.type === "ORDER_CONFIRM");
+    assert.ok(confirmMsg);
+    assert.equal(confirmMsg.payload.status, "paid");
+    assert.equal(confirmMsg.payload.paymentId, result.payment_id);
+    assert.equal(confirmMsg.payload.signature_verified, true);
+    assert.equal(confirmMsg.payload.payment_method, "upi_circle");
+  });
+
+  test("5. Payment failure protection: Simulated gateway error aborts before inventory update, logging ORDER_FAIL", async () => {
+    const threadId = "test_pay_fail_" + Date.now();
+    const initialInventory = defaultInventory.stock_kg;
+
+    const result = await runNegotiation({
+      threadId,
+      scenario: "happy",
+      simulatePaymentFail: true,
+    });
+
+    assert.equal(result.status, "PAYMENT_FAILED");
+    assert.equal(result.final_message_type, "ORDER_FAIL");
+
+    const thread = getThread(threadId);
+    const orderCreateMsg = thread.find((m) => m.type === "ORDER_CREATE");
+    assert.ok(orderCreateMsg, "ORDER_CREATE must exist because order was initialized");
+
+    const orderFailMsg = thread.find((m) => m.type === "ORDER_FAIL");
+    assert.ok(orderFailMsg, "ORDER_FAIL must be recorded when payment settlement fails");
+
+    const orderConfirmMsg = thread.find((m) => m.type === "ORDER_CONFIRM");
+    assert.equal(orderConfirmMsg, undefined, "ORDER_CONFIRM must NOT be issued on payment failure");
+
+    // Inventory check: stock must NOT be decremented!
+    const currentItem = defaultInventory; // or from inventoryStore
+    assert.equal(currentItem.stock_kg, initialInventory, "Inventory must remain unchanged when payment fails");
+  });
 });

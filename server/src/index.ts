@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import negotiateRouter from "./routes/negotiate.js";
 import threadsRouter from "./routes/threads.js";
 import healthRouter from "./routes/health.js";
+import paymentsRouter from "./routes/payments.js";
 import { seedDatabase } from "./db/seed.js";
 import { db } from "./db/connection.js";
 
@@ -22,6 +23,7 @@ app.use(express.json());
 // API Routes
 app.use("/api/negotiate", negotiateRouter);
 app.use("/api/threads", threadsRouter);
+app.use("/api/payments", paymentsRouter);
 app.use("/api", healthRouter);
 
 // Ensure default seed data exists

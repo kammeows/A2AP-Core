@@ -66,6 +66,9 @@ export interface NegotiationResult {
     | "REJECTED";
   final_message_type: MessageType;
   order_id?: string;
+  payment_id?: string;
+  signature?: string;
+  signature_verified?: boolean;
   total_amount?: number;
   pending_offer?: OfferPayload;
   policy_checks?: PolicyResult["checks"];
@@ -542,20 +545,6 @@ export async function runNegotiation(
       };
     }
 
-    if (params.simulatePaymentFail) {
-      logEnvelope(threadId, "ORDER_FAIL", RAZORPAY_SYSTEM_ID, BUYER_ID, {
-        reason: "GATEWAY_ERROR",
-        message: "Payment simulation trigger: Gateway rejected test transaction.",
-      });
-      return {
-        thread_id: threadId,
-        scenario,
-        status: "PAYMENT_FAILED",
-        final_message_type: "ORDER_FAIL",
-        message: "Simulated payment failure",
-      };
-    }
-
     const amountInPaise = Math.round(totalDealAmount * 100);
     const receipt = `rcpt_${threadId}_${Date.now().toString(36)}`;
     const order = await razorpayClient.createOrder(amountInPaise, "INR", receipt);
@@ -566,17 +555,53 @@ export async function runNegotiation(
       currency: order.currency,
       receipt: order.receipt,
       total_price: totalDealAmount,
+      status: "created",
       is_mock: order.is_mock,
+      narrative: `Razorpay Order ${order.id} created for ₹${totalDealAmount}. Status: created. Initiating automated delegated payment settlement via UPI Circle.`,
     });
+
+    // Settle payment: authorize & capture transaction with cryptographic verification
+    const settlement = await razorpayClient.settlePayment({
+      order,
+      simulatePaymentFail: Boolean(params.simulatePaymentFail),
+      method: "upi_circle",
+    });
+
+    if (!settlement.success || settlement.status !== "captured") {
+      logEnvelope(threadId, "ORDER_FAIL", RAZORPAY_SYSTEM_ID, BUYER_ID, {
+        reason: settlement.error || "PAYMENT_CAPTURE_FAILED",
+        orderId: order.id,
+        paymentId: settlement.paymentId,
+        message: settlement.message || "Payment settlement failed at gateway. Inventory remains unchanged.",
+        requires_human_approval: true,
+      });
+
+      // CRITICAL: Inventory is NEVER decremented for an uncaptured payment!
+      return {
+        thread_id: threadId,
+        scenario,
+        status: "PAYMENT_FAILED",
+        final_message_type: "ORDER_FAIL",
+        order_id: order.id,
+        payment_id: settlement.paymentId,
+        message: settlement.message || "Payment settlement failed",
+        policy_checks: allPolicyChecks,
+      };
+    }
 
     logEnvelope(threadId, "ORDER_CONFIRM", RAZORPAY_SYSTEM_ID, BUYER_ID, {
-      status: order.status,
+      status: "paid",
       orderId: order.id,
+      paymentId: settlement.paymentId,
+      signature: settlement.signature,
+      signature_verified: settlement.signatureVerified,
+      payment_method: settlement.method,
       amount_inr: totalDealAmount,
-      message: `Razorpay test-mode order ${order.id} confirmed for ₹${totalDealAmount} across ${allPurchasedItems.length} items.`,
+      amount_paise: amountInPaise,
+      message: `Razorpay payment ${settlement.paymentId} CAPTURED and HMAC-SHA256 signature verified for Order ${order.id}. ₹${totalDealAmount} settled via UPI Circle.`,
     });
 
-    // Update database & store for all purchased items
+    // Update database & store for all purchased items ONLY AFTER confirmed payment settlement
     InventoryStore.updateStockAfterOrder(allPurchasedItems);
 
     return {
@@ -585,6 +610,9 @@ export async function runNegotiation(
       status: "CONFIRMED",
       final_message_type: "ORDER_CONFIRM",
       order_id: order.id,
+      payment_id: settlement.paymentId,
+      signature: settlement.signature,
+      signature_verified: settlement.signatureVerified,
       total_amount: totalDealAmount,
       policy_checks: allPolicyChecks,
       purchased_items: allPurchasedItems,
@@ -649,15 +677,48 @@ export async function runNegotiation(
           currency: order.currency,
           receipt: order.receipt,
           total_price: counterOffer.total_price,
+          status: "created",
+          is_mock: order.is_mock,
+          narrative: `Razorpay Order ${order.id} created for ₹${counterOffer.total_price} following bounded renegotiation.`,
         });
 
+        // Settle payment with cryptographic signature verification
+        const settlement = await razorpayClient.settlePayment({
+          order,
+          simulatePaymentFail: Boolean(params.simulatePaymentFail),
+          method: "upi_circle",
+        });
+
+        if (!settlement.success || settlement.status !== "captured") {
+          logEnvelope(threadId, "ORDER_FAIL", RAZORPAY_SYSTEM_ID, BUYER_ID, {
+            reason: settlement.error || "PAYMENT_CAPTURE_FAILED",
+            orderId: order.id,
+            paymentId: settlement.paymentId,
+            message: settlement.message || "Renegotiated deal payment capture failed. Inventory unchanged.",
+          });
+          return {
+            thread_id: threadId,
+            scenario,
+            status: "PAYMENT_FAILED",
+            final_message_type: "ORDER_FAIL",
+            order_id: order.id,
+            payment_id: settlement.paymentId,
+            message: settlement.message || "Payment settlement failed",
+            policy_checks: rePolicyResult.checks,
+          };
+        }
+
         logEnvelope(threadId, "ORDER_CONFIRM", RAZORPAY_SYSTEM_ID, BUYER_ID, {
-          status: order.status,
+          status: "paid",
           orderId: order.id,
+          paymentId: settlement.paymentId,
+          signature: settlement.signature,
+          signature_verified: settlement.signatureVerified,
+          payment_method: settlement.method,
           amount_inr: counterOffer.total_price,
           item: counterOffer.item,
           quantity_kg: counterOffer.quantity_kg,
-          message: `Negotiation succeeded: Razorpay order ${order.id} confirmed for ₹${counterOffer.total_price} after bounded renegotiation.`,
+          message: `Negotiation succeeded: Razorpay payment ${settlement.paymentId} CAPTURED (Order ${order.id}) for ₹${counterOffer.total_price} after bounded renegotiation.`,
         });
 
         const renegPurchased: PurchasedItem[] = [
@@ -676,6 +737,9 @@ export async function runNegotiation(
           status: "RENEGOTIATED_AND_CONFIRMED",
           final_message_type: "ORDER_CONFIRM",
           order_id: order.id,
+          payment_id: settlement.paymentId,
+          signature: settlement.signature,
+          signature_verified: settlement.signatureVerified,
           total_amount: counterOffer.total_price,
           policy_checks: rePolicyResult.checks,
           purchased_items: renegPurchased,
@@ -712,6 +776,9 @@ export async function confirmPendingTransaction(params: {
   success: boolean;
   status: string;
   order_id?: string;
+  payment_id?: string;
+  signature?: string;
+  signature_verified?: boolean;
   total_amount?: number;
   buyer_stock?: number;
   seller_stock?: number;
@@ -727,14 +794,6 @@ export async function confirmPendingTransaction(params: {
     return { success: true, status: "DECLINED" };
   }
 
-  if (simulatePaymentFail) {
-    logEnvelope(threadId, "ORDER_FAIL", RAZORPAY_SYSTEM_ID, BUYER_ID, {
-      reason: "PAYMENT_GATEWAY_ERROR",
-      message: "Simulated payment processing error at gateway.",
-    });
-    return { success: false, status: "PAYMENT_FAILED" };
-  }
-
   const totalPrice = offer.total_price || 1440;
   const amountInPaise = Math.round(totalPrice * 100);
   const receipt = `rcpt_${threadId}_human_${Date.now().toString(36)}`;
@@ -746,15 +805,38 @@ export async function confirmPendingTransaction(params: {
     currency: order.currency,
     receipt: order.receipt,
     total_price: totalPrice,
+    status: "created",
+    is_mock: order.is_mock,
+    narrative: `Human-authorized Razorpay Order ${order.id} created for ₹${totalPrice}. Initiating payment capture.`,
   });
 
+  const settlement = await razorpayClient.settlePayment({
+    order,
+    simulatePaymentFail: Boolean(simulatePaymentFail),
+    method: "upi_circle",
+  });
+
+  if (!settlement.success || settlement.status !== "captured") {
+    logEnvelope(threadId, "ORDER_FAIL", RAZORPAY_SYSTEM_ID, BUYER_ID, {
+      reason: settlement.error || "PAYMENT_GATEWAY_ERROR",
+      orderId: order.id,
+      paymentId: settlement.paymentId,
+      message: settlement.message || "Simulated payment processing error at gateway. Inventory unchanged.",
+    });
+    return { success: false, status: "PAYMENT_FAILED" };
+  }
+
   logEnvelope(threadId, "ORDER_CONFIRM", RAZORPAY_SYSTEM_ID, BUYER_ID, {
-    status: order.status,
+    status: "paid",
     orderId: order.id,
+    paymentId: settlement.paymentId,
+    signature: settlement.signature,
+    signature_verified: settlement.signatureVerified,
+    payment_method: settlement.method,
     amount_inr: totalPrice,
     item: offer.item || "flour",
     quantity_kg: offer.quantity_kg || 50,
-    message: `Human-authorized Razorpay order ${order.id} confirmed for ₹${totalPrice}.`,
+    message: `Human-authorized Razorpay payment ${settlement.paymentId} CAPTURED (Order ${order.id}) for ₹${totalPrice}.`,
   });
 
   const purchasedItems: PurchasedItem[] = [
@@ -771,6 +853,9 @@ export async function confirmPendingTransaction(params: {
     success: true,
     status: "CONFIRMED",
     order_id: order.id,
+    payment_id: settlement.paymentId,
+    signature: settlement.signature,
+    signature_verified: settlement.signatureVerified,
     total_amount: totalPrice,
     buyer_stock: (offer.quantity_kg || 5) + 15,
     purchased_items: purchasedItems,

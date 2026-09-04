@@ -143,6 +143,9 @@ export interface NegotiationResult {
     | "REJECTED";
   final_message_type: MessageType;
   order_id?: string;
+  payment_id?: string;
+  signature?: string;
+  signature_verified?: boolean;
   total_amount?: number;
   pending_offer?: OfferPayload;
   policy_checks?: PolicyCheck[];

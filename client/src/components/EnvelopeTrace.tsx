@@ -839,17 +839,45 @@ export const EnvelopeTrace: React.FC<EnvelopeTraceProps> = ({
                           {envelope.payload.message ||
                             `Razorpay Order ${envelope.payload.orderId} created successfully.`}
                         </p>
-                        <p
-                          style={{
-                            fontSize: "0.72rem",
-                            color: "#64748b",
-                            marginTop: 1,
-                            fontFamily: "var(--font-mono)",
-                          }}
-                        >
-                          Receipt:{" "}
-                          {envelope.payload.receipt || envelope.payload.orderId}
-                        </p>
+                        <div style={{ display: "flex", gap: "0.6rem", flexWrap: "wrap", marginTop: 2, alignItems: "center" }}>
+                          <p
+                            style={{
+                              fontSize: "0.72rem",
+                              color: "#64748b",
+                              margin: 0,
+                              fontFamily: "var(--font-mono)",
+                            }}
+                          >
+                            Order: {envelope.payload.orderId}
+                          </p>
+                          {envelope.payload.paymentId && (
+                            <p
+                              style={{
+                                fontSize: "0.72rem",
+                                color: "#0369a1",
+                                margin: 0,
+                                fontFamily: "var(--font-mono)",
+                                fontWeight: 700,
+                              }}
+                            >
+                              Payment: {envelope.payload.paymentId}
+                            </p>
+                          )}
+                          {envelope.payload.signature_verified && (
+                            <span
+                              style={{
+                                fontSize: "0.68rem",
+                                color: "#15803d",
+                                fontWeight: 700,
+                                background: "rgba(34, 197, 94, 0.15)",
+                                padding: "0.1rem 0.35rem",
+                                borderRadius: 4,
+                              }}
+                            >
+                              ✓ HMAC-SHA256 Verified
+                            </span>
+                          )}
+                        </div>
                       </div>
                       <div
                         style={{

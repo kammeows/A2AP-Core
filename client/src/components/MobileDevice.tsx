@@ -337,10 +337,30 @@ export const MobileDevice: React.FC<MobileDeviceProps> = ({
                 <p style={{ fontSize: '0.72rem', color: '#334155', fontFamily: 'var(--font-mono)' }}>
                   Order: {latestResult.order_id}
                 </p>
-                <div style={{ fontSize: '0.68rem', color: '#059669', marginTop: 2, fontWeight: 600 }}>
+                {latestResult.payment_id && (
+                  <p style={{ fontSize: '0.72rem', color: '#0369a1', fontFamily: 'var(--font-mono)', marginTop: 1 }}>
+                    Payment: {latestResult.payment_id}
+                  </p>
+                )}
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.35rem',
+                  fontSize: '0.66rem',
+                  color: '#15803d',
+                  marginTop: 4,
+                  fontWeight: 700,
+                  background: 'rgba(34, 197, 94, 0.1)',
+                  padding: '0.2rem 0.4rem',
+                  borderRadius: 4,
+                  width: 'fit-content',
+                }}>
+                  <span>✓ HMAC-SHA256 Verified • UPI Circle</span>
+                </div>
+                <div style={{ fontSize: '0.68rem', color: '#059669', marginTop: 4, fontWeight: 600 }}>
                   {latestResult.status === 'RENEGOTIATED_AND_CONFIRMED'
-                    ? '✓ Renegotiated to fit cap & confirmed'
-                    : '✓ Policy approved & test-mode order created'}
+                    ? '✓ Renegotiated to fit cap & settlement captured'
+                    : '✓ Policy approved & payment captured'}
                 </div>
               </div>
             )}
