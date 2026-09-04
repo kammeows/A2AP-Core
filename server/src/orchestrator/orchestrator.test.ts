@@ -1,6 +1,6 @@
 import { test, describe, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { runNegotiation, confirmPendingTransaction } from "./orchestrator.js";
+import { runNegotiation, confirmPendingTransaction, getWeekSpent, BUYER_ID } from "./orchestrator.js";
 import { getThread, clearAll } from "../thread/threadStore.js";
 import { saveItem, defaultInventory } from "../inventory/inventoryStore.js";
 
@@ -122,6 +122,9 @@ describe("Orchestrator End-to-End A2A Flow", () => {
     // Inventory check: stock must NOT be decremented!
     const currentItem = defaultInventory; // or from inventoryStore
     assert.equal(currentItem.stock_kg, initialInventory, "Inventory must remain unchanged when payment fails");
+
+    // Weekly circle cap budget check: spending must NOT be counted for failed transactions!
+    assert.equal(getWeekSpent(BUYER_ID), 0, "Weekly circle cap spending must NOT increase when payment fails");
   });
 
   test("6. Partial delegation mode: runNegotiation returns AWAITING_CONFIRMATION with empty purchased_items, zero order created until human approves", async () => {
@@ -165,6 +168,7 @@ describe("Orchestrator End-to-End A2A Flow", () => {
     const threadAfter = getThread(threadId);
     assert.ok(threadAfter.find((m) => m.type === "ORDER_CREATE"));
     assert.ok(threadAfter.find((m) => m.type === "ORDER_CONFIRM"));
+    assert.equal(getWeekSpent(BUYER_ID), 1440, "Weekly circle cap spending must increase by confirmed amount upon successful payment");
   });
 
   test("7. Partial delegation mode: confirmPendingTransaction decline path cleanly aborts without payment or inventory decrement", async () => {
@@ -192,5 +196,39 @@ describe("Orchestrator End-to-End A2A Flow", () => {
     const orderFailMsg = thread.find((m) => m.type === "ORDER_FAIL");
     assert.ok(orderFailMsg, "ORDER_FAIL must be recorded for audit trail when declined");
     assert.equal(orderFailMsg.payload.reason, "HUMAN_DECLINED");
+    assert.equal(getWeekSpent(BUYER_ID), 0, "Declined transaction must NOT increase weekly spent amount");
+  });
+
+  test("8. Partial delegation mode: confirmPendingTransaction with simulatePaymentFail rejects payment and leaves inventory untouched", async () => {
+    const threadId = "test_partial_pay_fail_" + Date.now();
+
+    const result = await runNegotiation({
+      threadId,
+      scenario: "happy",
+      delegationMode: "partial",
+    });
+
+    assert.equal(result.status, "AWAITING_CONFIRMATION");
+
+    const failResult = await confirmPendingTransaction({
+      threadId,
+      offer: result.pending_offer,
+      action: "approve",
+      simulatePaymentFail: true,
+    });
+
+    assert.equal(failResult.success, false);
+    assert.equal(failResult.status, "PAYMENT_FAILED");
+    assert.ok(failResult.order_id, "Order ID should be recorded for tracking");
+    assert.ok(failResult.payment_id, "Payment ID should be recorded for tracing");
+    assert.ok(failResult.message, "Failure message should be provided");
+
+    const thread = getThread(threadId);
+    const orderFailMsg = thread.find((m) => m.type === "ORDER_FAIL");
+    assert.ok(orderFailMsg, "ORDER_FAIL must be recorded on payment failure");
+    assert.equal(orderFailMsg.payload.reason, "PAYMENT_GATEWAY_DECLINED");
+    const orderConfirmMsg = thread.find((m) => m.type === "ORDER_CONFIRM");
+    assert.equal(orderConfirmMsg, undefined, "ORDER_CONFIRM must NOT be issued on payment failure");
+    assert.equal(getWeekSpent(BUYER_ID), 0, "Failed transaction must NOT increase weekly spent amount");
   });
 });

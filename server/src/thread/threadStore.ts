@@ -109,25 +109,33 @@ export class ThreadStore {
   static clearThread = clearThread;
   static clearAll = clearAll;
   static getConfirmedSpendingForAgent(buyerId: string): number {
-    const stmt = db.prepare(`
-      SELECT payload FROM messages
-      WHERE from_agent = ? AND type = 'ORDER_CREATE'
-    `);
-    const rows = stmt.all(buyerId) as Array<{ payload: string }>;
-    let total = 0;
-    for (const r of rows) {
-      try {
-        const p = JSON.parse(r.payload);
-        if (typeof p.total_price === "number") {
-          total += p.total_price;
-        } else if (typeof p.amount === "number") {
-          total += p.amount / 100;
+    try {
+      const stmt = db.prepare(`
+        SELECT payload FROM messages
+        WHERE (to_agent = ? OR from_agent = ?) AND type = 'ORDER_CONFIRM'
+      `);
+      const rows = stmt.all(buyerId, buyerId) as Array<{ payload: string }>;
+      let total = 0;
+      for (const r of rows) {
+        try {
+          const p = JSON.parse(r.payload);
+          if (typeof p.amount_inr === "number") {
+            total += p.amount_inr;
+          } else if (typeof p.total_price === "number") {
+            total += p.total_price;
+          } else if (typeof p.amount_paise === "number") {
+            total += p.amount_paise / 100;
+          } else if (typeof p.amount === "number") {
+            total += p.amount / 100;
+          }
+        } catch {
+          // ignore
         }
-      } catch {
-        // ignore
       }
+      return total;
+    } catch {
+      return 0;
     }
-    return total;
   }
 }
 

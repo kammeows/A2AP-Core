@@ -21,7 +21,7 @@ import {
 } from "./negotiationPolicy.js";
 import {
   allocateSplitAccept,
-  AllocationLine,
+  type AllocationLine,
 } from "./pricingEngine.js";
 import {
   ProcurementOption,
@@ -765,5 +765,5 @@ export class BuyerAgent {
   static allocateSplitAccept = allocateSplitAccept;
 }
 
-export { allocateSplitAccept, AllocationLine };
+export { allocateSplitAccept, type AllocationLine };
 export default BuyerAgent;

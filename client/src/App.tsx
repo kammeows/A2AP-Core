@@ -97,7 +97,7 @@ export const App: React.FC = () => {
         sellerStockKg: customOptions?.sellerStockKg ?? sellerStockKg,
         buyerTargetStockKg: customOptions?.buyerTargetStockKg ?? buyerTargetStockKg,
         delegationMode,
-        simulatePaymentFail,
+        simulatePaymentFail: customOptions?.simulatePaymentFail ?? simulatePaymentFail,
         itemToProcure: customOptions?.itemToProcure,
         quantityNeeded: customOptions?.quantityNeeded,
         itemsToProcure: customOptions?.itemsToProcure,
@@ -203,14 +203,16 @@ export const App: React.FC = () => {
           final_message_type: 'ORDER_FAIL',
           message: 'Transaction declined by user',
         });
-      } else if (res.status === 'PAYMENT_FAILED') {
+      } else if (res.status === 'PAYMENT_FAILED' || !res.success) {
         setLatestResult({
           success: false,
           thread_id: activeThreadId,
           scenario: 'custom',
           status: 'PAYMENT_FAILED',
           final_message_type: 'ORDER_FAIL',
-          message: 'Payment gateway error',
+          order_id: res.order_id,
+          payment_id: (res as any).payment_id,
+          message: res.message || 'Payment gateway error: Transaction declined',
         });
       }
 
@@ -225,8 +227,16 @@ export const App: React.FC = () => {
       if (typeof polData?.week_spent_so_far === 'number') {
         setWeekSpentSoFar(polData.week_spent_so_far);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error confirming transaction:', err);
+      setLatestResult({
+        success: false,
+        thread_id: activeThreadId,
+        scenario: 'custom',
+        status: 'PAYMENT_FAILED',
+        final_message_type: 'ORDER_FAIL',
+        message: err.message || 'Payment processing error at gateway',
+      });
     } finally {
       setIsConfirming(false);
     }
@@ -280,6 +290,7 @@ export const App: React.FC = () => {
             latestResult={latestResult}
             messages={messages}
             onSelectMessage={handleSelectMessage}
+            simulatePaymentFail={simulatePaymentFail}
           />
         </div>
 

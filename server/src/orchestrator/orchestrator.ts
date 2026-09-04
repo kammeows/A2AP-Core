@@ -1,4 +1,4 @@
-import { appendMessage, getThread, db } from "../thread/threadStore.js";
+import { appendMessage, getThread, db, ThreadStore } from "../thread/threadStore.js";
 import { evaluateDeal } from "../policy/policyEngine.js";
 import { sellerRespondToRfq } from "../agents/sellerAgent.js";
 import { buyerEvaluateOffer, BuyerCatalogService } from "../agents/buyerAgent.js";
@@ -101,29 +101,7 @@ export function logEnvelope(
 }
 
 export function getWeekSpent(buyerId: string = BUYER_ID): number {
-  try {
-    const stmt = db.prepare(`
-      SELECT payload FROM messages
-      WHERE from_agent = ? AND type = 'ORDER_CREATE'
-    `);
-    const rows = stmt.all(buyerId) as Array<{ payload: string }>;
-    let total = 0;
-    for (const r of rows) {
-      try {
-        const p = JSON.parse(r.payload);
-        if (typeof p.total_price === "number") {
-          total += p.total_price;
-        } else if (typeof p.amount === "number") {
-          total += p.amount / 100;
-        }
-      } catch {
-        // ignore
-      }
-    }
-    return total;
-  } catch {
-    return 0;
-  }
+  return ThreadStore.getConfirmedSpendingForAgent(buyerId);
 }
 
 export function getPolicyConfig(agentId: string = BUYER_ID): PolicyConfig {
@@ -831,6 +809,7 @@ export async function confirmPendingTransaction(params: {
   buyer_stock?: number;
   seller_stock?: number;
   purchased_items?: PurchasedItem[];
+  message?: string;
 }> {
   const { threadId, offer, action = "approve", simulatePaymentFail = false } = params;
 
@@ -839,7 +818,7 @@ export async function confirmPendingTransaction(params: {
       reason: "HUMAN_DECLINED",
       message: "Transaction declined by restaurant manager in Partial Autonomous Mode.",
     });
-    return { success: true, status: "DECLINED" };
+    return { success: true, status: "DECLINED", message: "Transaction declined by restaurant manager in Partial Autonomous Mode." };
   }
 
   const totalPrice = offer.total_price || 1440;
@@ -871,7 +850,13 @@ export async function confirmPendingTransaction(params: {
       paymentId: settlement.paymentId,
       message: settlement.message || "Simulated payment processing error at gateway. Inventory unchanged.",
     });
-    return { success: false, status: "PAYMENT_FAILED" };
+    return {
+      success: false,
+      status: "PAYMENT_FAILED",
+      order_id: order.id,
+      payment_id: settlement.paymentId,
+      message: settlement.message || "Simulated payment processing error at gateway. Inventory unchanged.",
+    };
   }
 
   logEnvelope(threadId, "ORDER_CONFIRM", RAZORPAY_SYSTEM_ID, BUYER_ID, {

@@ -81,7 +81,7 @@ router.post("/confirm", async (req, res) => {
     });
 
     res.status(200).json({
-      success: true,
+      success: result.success,
       ...result,
     });
   } catch (error: any) {

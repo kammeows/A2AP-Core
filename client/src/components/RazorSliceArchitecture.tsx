@@ -34,6 +34,7 @@ export interface RazorSliceArchitectureProps {
   latestResult: NegotiationResult | null;
   messages?: Envelope[];
   onSelectMessage?: (messageId: string) => void;
+  simulatePaymentFail?: boolean;
 }
 
 export interface BuyerPantry {
@@ -68,6 +69,7 @@ export interface KitchenLogEntry {
     | "a2a_procure"
     | "restocked"
     | "order_served"
+    | "error"
     | "info";
   title: string;
   detail: string;
@@ -148,6 +150,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
   latestResult,
   messages = [],
   onSelectMessage,
+  simulatePaymentFail = false,
 }) => {
   // 1. RazorSlice Buyer Stock State (Target stock absorbs multiple order cycles)
   const [buyerStock, setBuyerStock] = useState<BuyerPantry>({
@@ -242,6 +245,19 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
     text: string;
     items: Array<{ item: string; quantity: number; seller: string }>;
   } | null>(null);
+
+  // Payment failure toast banner
+  const [paymentErrorNotification, setPaymentErrorNotification] = useState<{
+    text: string;
+    detail?: string;
+  } | null>(null);
+
+  // When payment failure simulation is active, immediately clear any lingering "Payment Confirmed!" restock notification
+  useEffect(() => {
+    if (simulatePaymentFail) {
+      setRestockNotification(null);
+    }
+  }, [simulatePaymentFail]);
 
   const lastProcessedThreadRef = useRef<string | null>(null);
   const processedTxKeysRef = useRef<Set<string>>(new Set<string>());
@@ -436,6 +452,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
       });
     }
 
+    setPaymentErrorNotification(null);
     const bannerText = `Payment Confirmed! Restocked ${purchasedList.map((p) => `+${p.quantity} ${p.item}`).join(", ")}`;
     setRestockNotification({
       text: bannerText,
@@ -519,6 +536,43 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
           wasAutoSimulatingRef.current = false;
         }
       }
+    } else if (latestResult && latestResult.status === "PAYMENT_FAILED") {
+      // 1. Immediately clear any restock notification so it NEVER says "Payment Confirmed!"
+      setRestockNotification(null);
+
+      // 2. Display payment failure alert banner in kitchen simulation
+      setPaymentErrorNotification({
+        text: "❌ Razorpay Payment Failed: Transaction Declined by Gateway",
+        detail:
+          latestResult.message ||
+          "Simulated payment processing error at gateway. Sourcing halted; kitchen inventory unchanged.",
+      });
+
+      // 3. Log the payment failure in the Kitchen Agent audit trail
+      addLog(
+        "error",
+        "❌ Payment Settlement Failed (Razorpay Gateway Error)",
+        latestResult.message ||
+          "Transaction declined at Razorpay gateway. Kitchen inventory remains unchanged; order cannot be fulfilled.",
+        waitingForProcurementOrderRef.current?.id,
+      );
+
+      // 4. If an order was blocked waiting for ingredients, abort and hold it
+      if (waitingForProcurementOrderRef.current) {
+        const waitingOrder = waitingForProcurementOrderRef.current;
+        waitingForProcurementOrderRef.current = null;
+        addLog(
+          "par_trigger",
+          `⛔ Order #${waitingOrder.id} (${waitingOrder.name}) Held: Payment Failed`,
+          `Cannot prepare Order #${waitingOrder.id} because ingredient replenishment payment failed at Razorpay gateway. Kitchen inventory unchanged.`,
+          waitingOrder.id,
+        );
+      }
+
+      // 5. Ensure auto-simulation and active processing order are stopped
+      setIsAutoSimulating(false);
+      wasAutoSimulatingRef.current = false;
+      setActiveProcessingOrder(null);
     }
   }, [latestResult]);
 
@@ -701,6 +755,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
     if (isFulfillingOrderRef.current) return false;
     isFulfillingOrderRef.current = true;
     setIsFulfillingOrder(true);
+    setPaymentErrorNotification(null);
 
     try {
       const currentQueue = orderQueueRef.current;
@@ -824,6 +879,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
                 sellerInventoriesRef.current["agent:seller:razorcery_2"].milk,
               buyerTargetStockKg: TARGET_STOCK_LEVELS.flour,
               sellerInventories: currentSellerInventories,
+              simulatePaymentFail,
             });
             if (
               res &&
@@ -847,6 +903,22 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
               );
               setActiveProcessingOrder(null);
               return false;
+            } else if (res && res.status === "PAYMENT_FAILED") {
+              setRestockNotification(null);
+              setPaymentErrorNotification({
+                text: "❌ Proactive Restock Payment Failed: Gateway Error",
+                detail:
+                  res.message ||
+                  "Simulated payment processing error at gateway. Kitchen inventory remains unchanged.",
+              });
+              addLog(
+                "error",
+                `❌ Proactive Restock Payment Failed (Razorpay Error)`,
+                `Transaction declined by gateway. Par level replenishment canceled; kitchen inventory unchanged.`,
+                currentOrder.id,
+              );
+              setIsAutoSimulating(false);
+              wasAutoSimulatingRef.current = false;
             }
           } finally {
             proactiveReplenishment.forEach((i) =>
@@ -925,6 +997,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
               sellerInventoriesRef.current["agent:seller:razorcery_2"].milk,
             buyerTargetStockKg: TARGET_STOCK_LEVELS.flour,
             sellerInventories: currentSellerInventories,
+            simulatePaymentFail,
           });
           if (
             res &&
@@ -994,6 +1067,24 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
           setIsAutoSimulating(false);
           setActiveProcessingOrder(null);
           return false;
+        } else if (res && res.status === "PAYMENT_FAILED") {
+          setRestockNotification(null);
+          setPaymentErrorNotification({
+            text: "❌ Razorpay Payment Failed: Order Sourcing Aborted",
+            detail:
+              res.message ||
+              "Simulated payment processing error at gateway. Kitchen inventory unchanged.",
+          });
+          addLog(
+            "error",
+            `❌ Order #${currentOrder.id} Sourcing Failed (Razorpay Error)`,
+            `Payment declined by Razorpay gateway for ₹${res.total_amount || ""}. Order cannot be fulfilled; pantry stock unchanged.`,
+            currentOrder.id,
+          );
+          setIsAutoSimulating(false);
+          wasAutoSimulatingRef.current = false;
+          setActiveProcessingOrder(null);
+          return false;
         } else {
           addLog(
             "par_trigger",
@@ -1035,6 +1126,8 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
     waitingForProcurementOrderRef.current = null;
     wasAutoSimulatingRef.current = false;
     setIsAutoSimulating(false);
+    setRestockNotification(null);
+    setPaymentErrorNotification(null);
 
     if (preset === "default") {
       sellerInventoriesRef.current = {
@@ -1619,6 +1712,52 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
         </div>
       )}
 
+      {/* Payment Failure Live Notification Banner */}
+      {paymentErrorNotification && (
+        <div
+          style={{
+            position: "relative",
+            zIndex: 10,
+            background:
+              "linear-gradient(90deg, rgba(239, 68, 68, 0.25) 0%, rgba(185, 28, 28, 0.25) 100%)",
+            border: "1px solid #ef4444",
+            borderRadius: 8,
+            padding: "0.6rem 1rem",
+            marginBottom: "1rem",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            flexWrap: "wrap",
+            gap: "0.5rem",
+            animation: "pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+            <AlertCircle size={18} color="#ef4444" />
+            <span
+              style={{ fontWeight: 700, color: "#ffffff", fontSize: "0.85rem" }}
+            >
+              {paymentErrorNotification.text}
+            </span>
+          </div>
+          {paymentErrorNotification.detail && (
+            <span
+              style={{
+                background: "#7f1d1d",
+                color: "#fca5a5",
+                fontSize: "0.72rem",
+                fontWeight: 700,
+                padding: "0.2rem 0.5rem",
+                borderRadius: 4,
+                border: "1px solid #b91c1c",
+              }}
+            >
+              {paymentErrorNotification.detail}
+            </span>
+          )}
+        </div>
+      )}
+
       {/* TOP: Header Bar & Preset Quick Select */}
       <div
         style={{
@@ -1632,7 +1771,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
           zIndex: 2,
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: "0.65rem" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "0.65rem", flexWrap: "wrap" }}>
           <ChefHat size={22} color="#38bdf8" />
           <h2
             style={{
@@ -1645,6 +1784,26 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
           >
             RazorSlice Kitchen & Multi-Seller A2A Negotiation Architecture
           </h2>
+          {simulatePaymentFail && (
+            <span
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "0.3rem",
+                padding: "0.2rem 0.55rem",
+                borderRadius: 4,
+                background: "rgba(220, 38, 38, 0.2)",
+                border: "1px solid #ef4444",
+                color: "#fca5a5",
+                fontSize: "0.7rem",
+                fontWeight: 700,
+                letterSpacing: "0.02em",
+              }}
+            >
+              <AlertCircle size={12} color="#ef4444" />
+              Simulated Payment Error Active
+            </span>
+          )}
         </div>
 
         {/* Preset quick buttons */}
@@ -2876,6 +3035,10 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
               badgeBg = "rgba(245, 158, 11, 0.18)";
               badgeColor = "#fde68a";
               borderColor = "rgba(245, 158, 11, 0.4)";
+            } else if (log.type === "error") {
+              badgeBg = "rgba(239, 68, 68, 0.25)";
+              badgeColor = "#ef4444";
+              borderColor = "rgba(239, 68, 68, 0.6)";
             }
 
             return (
