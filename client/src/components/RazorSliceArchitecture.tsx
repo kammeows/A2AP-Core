@@ -353,8 +353,12 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
     const nextBuyerStock = { ...buyerStockRef.current };
     for (const p of purchasedList) {
       const pantryKey = normalizeKey(p.item);
-      if (pantryKey in nextBuyerStock && typeof nextBuyerStock[pantryKey] === "number") {
-        nextBuyerStock[pantryKey] = (nextBuyerStock[pantryKey] as number) + p.quantity;
+      if (
+        pantryKey in nextBuyerStock &&
+        typeof nextBuyerStock[pantryKey] === "number"
+      ) {
+        nextBuyerStock[pantryKey] =
+          (nextBuyerStock[pantryKey] as number) + p.quantity;
       }
     }
     buyerStockRef.current = nextBuyerStock;
@@ -524,7 +528,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
             "order_taken",
             `⚡ Resuming Order #${waitingOrder.id} (${waitingOrder.name})`,
             `Restocked ingredients delivered to kitchen! Completing preparation of this order...`,
-            waitingOrder.id
+            waitingOrder.id,
           );
 
           setTimeout(() => {
@@ -883,7 +887,8 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
                 sellerInventoriesRef.current["agent:seller:razorcery_2"].milk,
               buyerTargetStockKg: TARGET_STOCK_LEVELS.flour,
               sellerInventories: currentSellerInventories,
-              simulatePaymentFail: simulationMode === "bank_decline" || simulatePaymentFail,
+              simulatePaymentFail:
+                simulationMode === "bank_decline" || simulatePaymentFail,
               simulationMode,
             });
             if (
@@ -958,7 +963,10 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
           const reorderPoint = PAR_STOCK_LEVELS[k];
 
           if (current < neededForRecipe || current < reorderPoint) {
-            const decision = evaluateProcurementDecision(k, buyerStockRef.current);
+            const decision = evaluateProcurementDecision(
+              k,
+              buyerStockRef.current,
+            );
             const qty = Math.max(neededForRecipe - current, decision.quantity);
             if (qty > 0) {
               itemsToProcure.push({
@@ -978,7 +986,9 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
           }
         }
 
-        itemsToProcure.forEach((i) => procurementInFlightRef.current.add(i.item));
+        itemsToProcure.forEach((i) =>
+          procurementInFlightRef.current.add(i.item),
+        );
 
         addLog(
           "a2a_procure",
@@ -1002,7 +1012,8 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
               sellerInventoriesRef.current["agent:seller:razorcery_2"].milk,
             buyerTargetStockKg: TARGET_STOCK_LEVELS.flour,
             sellerInventories: currentSellerInventories,
-            simulatePaymentFail: simulationMode === "bank_decline" || simulatePaymentFail,
+            simulatePaymentFail:
+              simulationMode === "bank_decline" || simulatePaymentFail,
             simulationMode,
           });
           if (
@@ -1777,7 +1788,14 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
           zIndex: 2,
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: "0.65rem", flexWrap: "wrap" }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "0.65rem",
+            flexWrap: "wrap",
+          }}
+        >
           <ChefHat size={22} color="#38bdf8" />
           <h2
             style={{
@@ -1790,60 +1808,6 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
           >
             RazorSlice Kitchen & Multi-Seller A2A Negotiation Architecture
           </h2>
-          <span
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "0.3rem",
-              padding: "0.2rem 0.55rem",
-              borderRadius: 4,
-              background:
-                simulationMode === "happy"
-                  ? "rgba(16, 185, 129, 0.2)"
-                  : simulationMode === "bank_decline"
-                  ? "rgba(220, 38, 38, 0.2)"
-                  : simulationMode === "network_drop"
-                  ? "rgba(245, 158, 11, 0.2)"
-                  : simulationMode === "gateway_downtime"
-                  ? "rgba(234, 88, 12, 0.2)"
-                  : "rgba(168, 85, 247, 0.2)",
-              border: `1px solid ${
-                simulationMode === "happy"
-                  ? "#10b981"
-                  : simulationMode === "bank_decline"
-                  ? "#ef4444"
-                  : simulationMode === "network_drop"
-                  ? "#f59e0b"
-                  : simulationMode === "gateway_downtime"
-                  ? "#ea580c"
-                  : "#a855f7"
-              }`,
-              color:
-                simulationMode === "happy"
-                  ? "#6ee7b7"
-                  : simulationMode === "bank_decline"
-                  ? "#fca5a5"
-                  : simulationMode === "network_drop"
-                  ? "#fde68a"
-                  : simulationMode === "gateway_downtime"
-                  ? "#fdba74"
-                  : "#d8b4fe",
-              fontSize: "0.7rem",
-              fontWeight: 700,
-              letterSpacing: "0.02em",
-            }}
-          >
-            <AlertCircle size={12} />
-            {simulationMode === "happy"
-              ? "UPI Circle Active (success@razorpay)"
-              : simulationMode === "bank_decline"
-              ? "Simulated Bank Decline Active (failure@razorpay)"
-              : simulationMode === "network_drop"
-              ? "Simulated Socket Drop Active (ECONNRESET)"
-              : simulationMode === "gateway_downtime"
-              ? "Simulated NPCI Switch 502 Downtime"
-              : "Policy Cap Breach Demo Active"}
-          </span>
         </div>
 
         {/* Preset quick buttons */}
@@ -1896,22 +1860,6 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
           >
             Surplus Stock
           </button>
-          <button
-            onClick={() => applyPreset("over_cap")}
-            disabled={isRunning}
-            style={{
-              padding: "0.28rem 0.65rem",
-              borderRadius: 6,
-              background: "rgba(239, 68, 68, 0.12)",
-              border: "1px solid rgba(239, 68, 68, 0.3)",
-              fontSize: "0.72rem",
-              color: "#fca5a5",
-              cursor: isRunning ? "not-allowed" : "pointer",
-              fontWeight: 600,
-            }}
-          >
-            Policy Cap Demo
-          </button>
         </div>
 
         {/* PILLAR C: Simulation Mode Selector Bar */}
@@ -1941,7 +1889,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
               gap: 4,
             }}
           >
-            <span>⚡ Resilience Rail:</span>
+            <span>Path Demos:</span>
           </span>
           <button
             onClick={() => setSimulationMode && setSimulationMode("happy")}
@@ -1966,7 +1914,9 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
             🟢 Happy Path (success@razorpay)
           </button>
           <button
-            onClick={() => setSimulationMode && setSimulationMode("bank_decline")}
+            onClick={() =>
+              setSimulationMode && setSimulationMode("bank_decline")
+            }
             style={{
               padding: "0.28rem 0.65rem",
               borderRadius: 6,
@@ -2986,7 +2936,12 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
           {/* Step Next Order Button */}
           <button
             onClick={() => processNextOrder()}
-            disabled={isRunning || orderQueue.length === 0 || isAutoSimulating || isFulfillingOrder}
+            disabled={
+              isRunning ||
+              orderQueue.length === 0 ||
+              isAutoSimulating ||
+              isFulfillingOrder
+            }
             style={{
               display: "inline-flex",
               alignItems: "center",
@@ -2994,7 +2949,10 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
               padding: "0.55rem 1rem",
               borderRadius: 8,
               background:
-                isRunning || orderQueue.length === 0 || isAutoSimulating || isFulfillingOrder
+                isRunning ||
+                orderQueue.length === 0 ||
+                isAutoSimulating ||
+                isFulfillingOrder
                   ? "#334155"
                   : "rgba(255, 255, 255, 0.1)",
               border: "1px solid rgba(255, 255, 255, 0.2)",
@@ -3002,7 +2960,10 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
               fontSize: "0.78rem",
               fontWeight: 700,
               cursor:
-                isRunning || orderQueue.length === 0 || isAutoSimulating || isFulfillingOrder
+                isRunning ||
+                orderQueue.length === 0 ||
+                isAutoSimulating ||
+                isFulfillingOrder
                   ? "not-allowed"
                   : "pointer",
             }}
@@ -3021,7 +2982,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
           </button>
 
           {/* Auto-Simulate Toggle Button */}
-          <button
+          {/* <button
             onClick={() => setIsAutoSimulating(!isAutoSimulating)}
             disabled={
               isRunning || (orderQueue.length === 0 && !isAutoSimulating)
@@ -3075,7 +3036,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
                 <span>Auto-Simulate All Orders</span>
               </>
             )}
-          </button>
+          </button> */}
         </div>
       </div>
 
