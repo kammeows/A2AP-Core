@@ -8,6 +8,7 @@ router.post("/", async (req, res) => {
   try {
     const {
       scenario = "custom",
+      simulationMode,
       customRfq,
       allowRenegotiation = true,
       buyerStockKg,
@@ -19,12 +20,14 @@ router.post("/", async (req, res) => {
       quantityNeeded,
       itemsToProcure,
       sellerInventories,
+      buyerVpa,
     } = req.body;
 
     const threadId = `thread_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 6)}`;
     const result = await runNegotiation({
       threadId,
       scenario,
+      simulationMode,
       customRfq,
       allowRenegotiation: Boolean(allowRenegotiation),
       buyerStockKg: buyerStockKg !== undefined ? Number(buyerStockKg) : undefined,
@@ -36,12 +39,14 @@ router.post("/", async (req, res) => {
       quantityNeeded: quantityNeeded ? Number(quantityNeeded) : undefined,
       itemsToProcure: Array.isArray(itemsToProcure) ? itemsToProcure : undefined,
       sellerInventories: sellerInventories && typeof sellerInventories === "object" ? sellerInventories : undefined,
+      buyerVpa,
     });
 
     res.status(200).json({
-      success: true,
+      success: result.status === "CONFIRMED" || result.status === "RENEGOTIATED_AND_CONFIRMED" || result.status === "AWAITING_CONFIRMATION",
       thread_id: result.thread_id,
       scenario: result.scenario,
+      simulation_mode: result.simulation_mode,
       status: result.status,
       final_message_type: result.final_message_type,
       order_id: result.order_id,
@@ -55,6 +60,17 @@ router.post("/", async (req, res) => {
       buyer_stock: result.buyer_stock,
       seller_stock: result.seller_stock,
       purchased_items: result.purchased_items,
+      error_code: result.error_code,
+      error_step: result.error_step,
+      error_source: result.error_source,
+      error_reason: result.error_reason,
+      error_description: result.error_description,
+      idempotency_key: result.idempotency_key,
+      attempt_number: result.attempt_number,
+      webhook_id: result.webhook_id,
+      webhook_verified: result.webhook_verified,
+      vpa: result.vpa,
+      can_retry: result.can_retry,
     });
   } catch (error: any) {
     console.error("Negotiation run failed:", error);

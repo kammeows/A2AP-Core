@@ -59,7 +59,14 @@ export const EnvelopeTrace: React.FC<EnvelopeTraceProps> = ({
       return msg.type === "POLICY_CHECK";
     }
     if (filter === "orders") {
-      return ["ORDER_CREATE", "ORDER_CONFIRM", "ORDER_FAIL"].includes(msg.type);
+      return [
+        "ORDER_CREATE",
+        "ORDER_CONFIRM",
+        "ORDER_FAIL",
+        "NETWORK_TIMEOUT",
+        "IDEMPOTENT_RETRY",
+        "WEBHOOK_RECEIVED",
+      ].includes(msg.type);
     }
     return true;
   });
@@ -156,6 +163,27 @@ export const EnvelopeTrace: React.FC<EnvelopeTraceProps> = ({
           border: "#dc2626",
           color: "#b91c1c",
           label: "ORDER FAILED / BLOCKED",
+        };
+      case "NETWORK_TIMEOUT":
+        return {
+          bg: "#fffbeb",
+          border: "#d97706",
+          color: "#b45309",
+          label: "NETWORK DROP (ECONNRESET)",
+        };
+      case "IDEMPOTENT_RETRY":
+        return {
+          bg: "#eff6ff",
+          border: "#0284c7",
+          color: "#0369a1",
+          label: "IDEMPOTENT RETRY (Safe Recovery)",
+        };
+      case "WEBHOOK_RECEIVED":
+        return {
+          bg: "#faf5ff",
+          border: "#9333ea",
+          color: "#7e22ce",
+          label: "WEBHOOK (HMAC-SHA256 Verified)",
         };
       case "REJECT":
         return {
@@ -868,6 +896,39 @@ export const EnvelopeTrace: React.FC<EnvelopeTraceProps> = ({
                               Payment: {envelope.payload.paymentId}
                             </p>
                           )}
+                          {envelope.payload.idempotency_key && (
+                            <span
+                              style={{
+                                fontSize: "0.66rem",
+                                color: "#0369a1",
+                                fontWeight: 700,
+                                background: "#eff6ff",
+                                border: "1px solid #bfdbfe",
+                                padding: "0.1rem 0.35rem",
+                                borderRadius: 4,
+                                fontFamily: "var(--font-mono)",
+                              }}
+                            >
+                              🔑 {envelope.payload.idempotency_key}
+                            </span>
+                          )}
+                          {envelope.payload.payment_method && (
+                            <span
+                              style={{
+                                fontSize: "0.66rem",
+                                color: "#0369a1",
+                                background: "#f0f9ff",
+                                border: "1px solid #bae6fd",
+                                padding: "0.1rem 0.35rem",
+                                borderRadius: 4,
+                              }}
+                            >
+                              Method: {envelope.payload.payment_method.toUpperCase()}
+                              {envelope.payload.internal_delegation_tag && (
+                                <span style={{ color: "#0284c7", fontWeight: 600 }}> ({envelope.payload.internal_delegation_tag})</span>
+                              )}
+                            </span>
+                          )}
                           {envelope.payload.signature_verified && (
                             <span
                               style={{
@@ -902,6 +963,220 @@ export const EnvelopeTrace: React.FC<EnvelopeTraceProps> = ({
                     </div>
                   )}
 
+                  {/* NETWORK_TIMEOUT */}
+                  {envelope.type === "NETWORK_TIMEOUT" && (
+                    <div
+                      style={{
+                        background: "#fffbeb",
+                        border: "1px solid #fde68a",
+                        borderRadius: 6,
+                        padding: "0.55rem 0.75rem",
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          marginBottom: "0.25rem",
+                        }}
+                      >
+                        <strong style={{ color: "#b45309", fontSize: "0.82rem" }}>
+                          ⚠️ Socket Hangup & Timeout ({envelope.payload.error_code || "ECONNRESET"})
+                        </strong>
+                        <span
+                          style={{
+                            fontSize: "0.65rem",
+                            background: "#fef3c7",
+                            color: "#92400e",
+                            fontWeight: 700,
+                            padding: "0.1rem 0.4rem",
+                            borderRadius: 4,
+                            border: "1px solid #fde68a",
+                          }}
+                        >
+                          Attempt #{envelope.payload.attempt_number || 1}
+                        </span>
+                      </div>
+                      <p style={{ fontSize: "0.74rem", color: "#475569", margin: "0.2rem 0" }}>
+                        {envelope.payload.message ||
+                          "Client lost HTTP socket connection mid-transaction. Downstream status unknown."}
+                      </p>
+                      {envelope.payload.idempotency_key && (
+                        <div
+                          style={{
+                            fontSize: "0.68rem",
+                            color: "#0369a1",
+                            fontFamily: "var(--font-mono)",
+                            marginTop: "0.3rem",
+                          }}
+                        >
+                          Protected by Idempotency Key:{" "}
+                          <strong>{envelope.payload.idempotency_key}</strong>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* IDEMPOTENT_RETRY */}
+                  {envelope.type === "IDEMPOTENT_RETRY" && (
+                    <div
+                      style={{
+                        background: "#eff6ff",
+                        border: "1px solid #bfdbfe",
+                        borderRadius: 6,
+                        padding: "0.55rem 0.75rem",
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          marginBottom: "0.25rem",
+                        }}
+                      >
+                        <strong style={{ color: "#1d4ed8", fontSize: "0.82rem" }}>
+                          🔄 Idempotent Reconnect & Dispatch
+                        </strong>
+                        <span
+                          style={{
+                            fontSize: "0.65rem",
+                            background: envelope.payload.reuse_key ? "#ecfdf5" : "#fef3c7",
+                            color: envelope.payload.reuse_key ? "#065f46" : "#92400e",
+                            fontWeight: 700,
+                            padding: "0.1rem 0.4rem",
+                            borderRadius: 4,
+                            border: `1px solid ${envelope.payload.reuse_key ? "#a7f3d0" : "#fde68a"}`,
+                          }}
+                        >
+                          {envelope.payload.reuse_key
+                            ? "Rule 1: SAME Idempotency Key"
+                            : "Rule 2: FRESH Idempotency Key"}
+                        </span>
+                      </div>
+                      <p style={{ fontSize: "0.74rem", color: "#334155", margin: "0.2rem 0" }}>
+                        {envelope.payload.narrative || envelope.payload.message}
+                      </p>
+                      <div
+                        style={{
+                          display: "flex",
+                          gap: "0.5rem",
+                          fontSize: "0.68rem",
+                          color: "#1e40af",
+                          fontFamily: "var(--font-mono)",
+                          marginTop: "0.25rem",
+                          flexWrap: "wrap",
+                        }}
+                      >
+                        <span>Key: <strong>{envelope.payload.idempotency_key}</strong></span>
+                        {envelope.payload.vpa && (
+                          <span>• Target VPA: <strong>{envelope.payload.vpa}</strong></span>
+                        )}
+                        {envelope.payload.backoff_ms !== undefined && (
+                          <span>• Backoff: <strong>{envelope.payload.backoff_ms}ms</strong></span>
+                        )}
+                      </div>
+                      {envelope.payload.primary_vpa && envelope.payload.backup_vpa && (
+                        <div
+                          style={{
+                            marginTop: "0.35rem",
+                            padding: "0.3rem 0.55rem",
+                            background: "rgba(30, 64, 175, 0.06)",
+                            borderRadius: 4,
+                            border: "1px solid rgba(191, 219, 254, 0.6)",
+                            fontSize: "0.68rem",
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "0.35rem",
+                            flexWrap: "wrap",
+                          }}
+                        >
+                          <span style={{ color: "#dc2626", fontWeight: 700 }}>Primary VPA Hard Declined:</span>
+                          <code style={{ color: "#991b1b", background: "#fee2e2", padding: "0.05rem 0.25rem", borderRadius: 3 }}>
+                            {envelope.payload.primary_vpa}
+                          </code>
+                          <span style={{ color: "#64748b" }}>➔</span>
+                          <span style={{ color: "#15803d", fontWeight: 700 }}>Falling back to Backup UPI:</span>
+                          <code style={{ color: "#166534", background: "#dcfce7", padding: "0.05rem 0.25rem", borderRadius: 3 }}>
+                            {envelope.payload.backup_vpa}
+                          </code>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* WEBHOOK_RECEIVED */}
+                  {envelope.type === "WEBHOOK_RECEIVED" && (
+                    <div
+                      style={{
+                        background: "#faf5ff",
+                        border: "1px solid #e9d5ff",
+                        borderRadius: 6,
+                        padding: "0.55rem 0.75rem",
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          marginBottom: "0.25rem",
+                        }}
+                      >
+                        <div style={{ display: "flex", alignItems: "center", gap: "0.35rem" }}>
+                          <span
+                            style={{
+                              fontSize: "0.68rem",
+                              fontWeight: 800,
+                              padding: "0.1rem 0.4rem",
+                              borderRadius: 4,
+                              background: envelope.payload.event === "payment.captured" ? "#dcfce7" : "#fee2e2",
+                              color: envelope.payload.event === "payment.captured" ? "#15803d" : "#b91c1c",
+                              border: `1px solid ${envelope.payload.event === "payment.captured" ? "#86efac" : "#fca5a5"}`,
+                            }}
+                          >
+                            EVENT: {envelope.payload.event}
+                          </span>
+                        </div>
+                        <span
+                          style={{
+                            fontSize: "0.66rem",
+                            color: "#7e22ce",
+                            fontWeight: 700,
+                            background: "#f3e8ff",
+                            padding: "0.1rem 0.4rem",
+                            borderRadius: 4,
+                            border: "1px solid #d8b4fe",
+                          }}
+                        >
+                          ✓ HMAC-SHA256 Signature Verified
+                        </span>
+                      </div>
+                      <p style={{ fontSize: "0.74rem", color: "#475569", margin: "0.2rem 0" }}>
+                        {envelope.payload.narrative ||
+                          `Webhook received and validated for order ${envelope.payload.orderId}`}
+                      </p>
+                      <div
+                        style={{
+                          fontSize: "0.68rem",
+                          color: "#6b21a8",
+                          fontFamily: "var(--font-mono)",
+                          display: "flex",
+                          gap: "0.6rem",
+                          marginTop: "0.25rem",
+                          flexWrap: "wrap",
+                        }}
+                      >
+                        <span>Order: {envelope.payload.orderId}</span>
+                        {envelope.payload.paymentId && <span>Payment: {envelope.payload.paymentId}</span>}
+                        {envelope.payload.error_code && (
+                          <span style={{ color: "#dc2626" }}>Error: {envelope.payload.error_code}</span>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
                   {/* ORDER_FAIL & REJECT */}
                   {(envelope.type === "ORDER_FAIL" ||
                     envelope.type === "REJECT") && (
@@ -910,30 +1185,99 @@ export const EnvelopeTrace: React.FC<EnvelopeTraceProps> = ({
                         style={{
                           display: "flex",
                           alignItems: "center",
-                          gap: "0.35rem",
-                          color: "#b91c1c",
+                          justifyContent: "space-between",
+                          marginBottom: "0.25rem",
                         }}
                       >
-                        <AlertOctagon size={15} />
-                        <strong style={{ fontSize: "0.84rem" }}>
-                          {envelope.payload.reason === "NO_SELLER_FOUND"
-                            ? "No Seller Found / Out of Stock"
-                            : envelope.payload.message ||
-                              envelope.payload.reason ||
-                              "Transaction Blocked"}
-                        </strong>
+                        <div
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "0.35rem",
+                            color: "#b91c1c",
+                          }}
+                        >
+                          <AlertOctagon size={15} />
+                          <strong style={{ fontSize: "0.84rem" }}>
+                            {envelope.payload.reason === "NO_SELLER_FOUND"
+                              ? "No Seller Found / Out of Stock"
+                              : envelope.payload.error_code
+                              ? `Payment Failed: ${envelope.payload.error_code}`
+                              : envelope.payload.message ||
+                                envelope.payload.reason ||
+                                "Transaction Blocked"}
+                          </strong>
+                        </div>
+                        {envelope.payload.webhook_verified && (
+                          <span
+                            style={{
+                              fontSize: "0.65rem",
+                              fontWeight: 700,
+                              color: "#b91c1c",
+                              background: "#fee2e2",
+                              padding: "0.1rem 0.35rem",
+                              borderRadius: 4,
+                              border: "1px solid #fecaca",
+                            }}
+                          >
+                            Webhook Verified ✓
+                          </span>
+                        )}
                       </div>
+
                       <p
                         style={{
                           fontSize: "0.74rem",
                           color: "#475569",
                           marginTop: "0.25rem",
+                          marginBottom: envelope.payload.error_code ? "0.4rem" : 0,
                         }}
                       >
-                        {envelope.payload.message ||
+                        {envelope.payload.error_description ||
+                          envelope.payload.message ||
                           envelope.payload.narrative ||
                           "Zero money transferred."}
                       </p>
+
+                      {/* Genuine Razorpay Error Diagnostics Grid */}
+                      {envelope.payload.error_code && (
+                        <div
+                          style={{
+                            background: "#fff1f2",
+                            border: "1px solid #fecdd3",
+                            borderRadius: 6,
+                            padding: "0.4rem 0.6rem",
+                            display: "grid",
+                            gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))",
+                            gap: "0.35rem",
+                            fontSize: "0.68rem",
+                            fontFamily: "var(--font-mono)",
+                          }}
+                        >
+                          <div>
+                            <span style={{ color: "#9f1239" }}>code: </span>
+                            <strong>{envelope.payload.error_code}</strong>
+                          </div>
+                          {envelope.payload.error_step && (
+                            <div>
+                              <span style={{ color: "#9f1239" }}>step: </span>
+                              <strong>{envelope.payload.error_step}</strong>
+                            </div>
+                          )}
+                          {envelope.payload.error_source && (
+                            <div>
+                              <span style={{ color: "#9f1239" }}>source: </span>
+                              <strong>{envelope.payload.error_source}</strong>
+                            </div>
+                          )}
+                          {envelope.payload.idempotency_key && (
+                            <div>
+                              <span style={{ color: "#9f1239" }}>key: </span>
+                              <strong>{envelope.payload.idempotency_key}</strong>
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>

@@ -11,8 +11,10 @@ import {
   fetchThread,
   resetSystemState,
   updatePolicy,
+  retryPayment,
+  cancelOrder,
 } from './api/client';
-import { Envelope, NegotiationResult, OfferPayload } from './types';
+import { Envelope, NegotiationResult, OfferPayload, SimulationMode } from './types';
 
 export const App: React.FC = () => {
   // Stock States
@@ -32,11 +34,13 @@ export const App: React.FC = () => {
   const [pendingOffer, setPendingOffer] = useState<OfferPayload | null>(null);
   const [latestResult, setLatestResult] = useState<NegotiationResult | null>(null);
 
-  // UI Status
+  // UI Status & Resilience States
   const [isRunning, setIsRunning] = useState<boolean>(false);
   const [isConfirming, setIsConfirming] = useState<boolean>(false);
+  const [isRetrying, setIsRetrying] = useState<boolean>(false);
   const [isResetting, setIsResetting] = useState<boolean>(false);
   const [simulatePaymentFail, setSimulatePaymentFail] = useState<boolean>(false);
+  const [simulationMode, setSimulationMode] = useState<SimulationMode>('happy');
 
   // Initial State Load
   const loadInitialData = useCallback(async () => {
@@ -90,14 +94,18 @@ export const App: React.FC = () => {
     setPendingOffer(null);
     setLatestResult(null);
 
+    const effSimMode = customOptions?.simulationMode ?? simulationMode;
+    const isFail = effSimMode === 'bank_decline' || (customOptions?.simulatePaymentFail ?? simulatePaymentFail);
+
     try {
       const result = await triggerNegotiation({
         scenario,
+        simulationMode: effSimMode,
         buyerStockKg: customOptions?.buyerStockKg ?? buyerStockKg,
         sellerStockKg: customOptions?.sellerStockKg ?? sellerStockKg,
         buyerTargetStockKg: customOptions?.buyerTargetStockKg ?? buyerTargetStockKg,
         delegationMode,
-        simulatePaymentFail: customOptions?.simulatePaymentFail ?? simulatePaymentFail,
+        simulatePaymentFail: isFail,
         itemToProcure: customOptions?.itemToProcure,
         quantityNeeded: customOptions?.quantityNeeded,
         itemsToProcure: customOptions?.itemsToProcure,
@@ -162,7 +170,7 @@ export const App: React.FC = () => {
         threadId: activeThreadId,
         offer: offerBeingConfirmed,
         action,
-        simulatePaymentFail,
+        simulatePaymentFail: simulationMode === 'bank_decline' || simulatePaymentFail,
       });
 
       // Update state
@@ -242,6 +250,66 @@ export const App: React.FC = () => {
     }
   };
 
+  // Handle Retry Payment from Mobile Phone Recovery Card
+  const handleRetryPayment = async (orderId: string) => {
+    if (!activeThreadId) return;
+    setIsRetrying(true);
+    try {
+      const res = await retryPayment({
+        orderId,
+        threadId: activeThreadId,
+        buyerVpa: 'success@razorpay',
+      });
+      setLatestResult(res);
+
+      // Re-fetch thread to show confirmed recovery envelopes
+      const threadData = await fetchThread(activeThreadId);
+      if (threadData?.messages) {
+        setMessages(threadData.messages);
+      }
+
+      // Refresh spending numbers
+      const polData = await fetchPolicy();
+      if (typeof polData?.week_spent_so_far === 'number') {
+        setWeekSpentSoFar(polData.week_spent_so_far);
+      }
+    } catch (err: any) {
+      console.error('Error retrying payment:', err);
+    } finally {
+      setIsRetrying(false);
+    }
+  };
+
+  // Handle Cancel Order from Mobile Phone Recovery Card
+  const handleCancelOrder = async (orderId: string) => {
+    if (!activeThreadId) return;
+    try {
+      await cancelOrder({
+        orderId,
+        threadId: activeThreadId,
+        reason: 'ORDER_CANCELLED_BY_USER',
+      });
+
+      setLatestResult((prev) =>
+        prev
+          ? {
+              ...prev,
+              status: 'REJECTED',
+              final_message_type: 'ORDER_FAIL',
+              message: 'Order cancelled by restaurant manager. Holds released.',
+            }
+          : null
+      );
+
+      const threadData = await fetchThread(activeThreadId);
+      if (threadData?.messages) {
+        setMessages(threadData.messages);
+      }
+    } catch (err: any) {
+      console.error('Error cancelling order:', err);
+    }
+  };
+
   // Reset System State
   const handleReset = async () => {
     setIsResetting(true);
@@ -256,6 +324,8 @@ export const App: React.FC = () => {
       setLatestResult(null);
       setMessages([]);
       setActiveThreadId(null);
+      setSimulationMode('happy');
+      setSimulatePaymentFail(false);
       await loadInitialData();
     } catch (err) {
       console.error('Error resetting system:', err);
@@ -290,7 +360,9 @@ export const App: React.FC = () => {
             latestResult={latestResult}
             messages={messages}
             onSelectMessage={handleSelectMessage}
-            simulatePaymentFail={simulatePaymentFail}
+            simulatePaymentFail={simulatePaymentFail || simulationMode === 'bank_decline'}
+            simulationMode={simulationMode}
+            setSimulationMode={setSimulationMode}
           />
         </div>
 
@@ -317,8 +389,16 @@ export const App: React.FC = () => {
               weekSpentSoFar={weekSpentSoFar}
               weeklyBudgetCap={weeklyBudgetCap}
               perTransactionCap={perTransactionCap}
-              simulatePaymentFail={simulatePaymentFail}
-              setSimulatePaymentFail={setSimulatePaymentFail}
+              simulatePaymentFail={simulatePaymentFail || simulationMode === 'bank_decline'}
+              setSimulatePaymentFail={(val) => {
+                setSimulatePaymentFail(val);
+                setSimulationMode(val ? 'bank_decline' : 'happy');
+              }}
+              simulationMode={simulationMode}
+              setSimulationMode={setSimulationMode}
+              onRetryPayment={handleRetryPayment}
+              onCancelPayment={handleCancelOrder}
+              isRetrying={isRetrying}
             />
           </div>
         </div>

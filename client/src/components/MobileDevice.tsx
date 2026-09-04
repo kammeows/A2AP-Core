@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   Zap,
   CheckCircle,
@@ -15,8 +15,15 @@ import {
   Layers,
   ShieldCheck,
   Receipt,
+  Radio,
+  RefreshCw,
+  AlertTriangle,
+  Code,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
-import { NegotiationResult, OfferPayload, Envelope } from '../types';
+import { NegotiationResult, OfferPayload, Envelope, SimulationMode, WebhookEventRecord } from '../types';
+import { fetchWebhookEvents } from '../api/client';
 
 interface MobileDeviceProps {
   delegationMode: 'full' | 'partial';
@@ -31,6 +38,11 @@ interface MobileDeviceProps {
   perTransactionCap: number;
   simulatePaymentFail: boolean;
   setSimulatePaymentFail: (val: boolean) => void;
+  simulationMode?: SimulationMode;
+  setSimulationMode?: (mode: SimulationMode) => void;
+  onRetryPayment?: (orderId: string) => Promise<void>;
+  onCancelPayment?: (orderId: string) => Promise<void>;
+  isRetrying?: boolean;
 }
 
 interface PassbookEntry {
@@ -51,6 +63,8 @@ interface PassbookEntry {
   method: string;
   status: 'PAID' | 'CAPTURED';
   verified: boolean;
+  idempotencyKey?: string;
+  attemptNumber?: number;
 }
 
 const SELLER_DETAILS: Record<string, { name: string; vpa: string }> = {
@@ -96,11 +110,20 @@ export const MobileDevice: React.FC<MobileDeviceProps> = ({
   perTransactionCap,
   simulatePaymentFail,
   setSimulatePaymentFail,
+  simulationMode = 'happy',
+  setSimulationMode,
+  onRetryPayment,
+  onCancelPayment,
+  isRetrying = false,
 }) => {
-  const [activeTab, setActiveTab] = useState<'mandate' | 'history'>('mandate');
+  const [activeTab, setActiveTab] = useState<'mandate' | 'history' | 'webhooks'>('mandate');
   const currentTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   const remainingBudget = Math.max(0, weeklyBudgetCap - weekSpentSoFar);
   const budgetPct = Math.min(100, Math.round((weekSpentSoFar / weeklyBudgetCap) * 100));
+
+  // Live Webhook Feed state
+  const [webhookEvents, setWebhookEvents] = useState<WebhookEventRecord[]>([]);
+  const [expandedWebhookId, setExpandedWebhookId] = useState<string | null>(null);
 
   // Initialize Passbook with seeded ledger entry for instant live audit demonstration
   const [passbook, setPassbook] = useState<PassbookEntry[]>([
@@ -124,8 +147,26 @@ export const MobileDevice: React.FC<MobileDeviceProps> = ({
       method: 'upi_circle',
       status: 'CAPTURED',
       verified: true,
+      idempotencyKey: 'idemp_setup99_attempt_1',
+      attemptNumber: 1,
     },
   ]);
+
+  // Load incoming webhooks
+  const loadWebhooks = useCallback(async () => {
+    try {
+      const data = await fetchWebhookEvents();
+      if (data?.events) {
+        setWebhookEvents(data.events);
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  useEffect(() => {
+    loadWebhooks();
+  }, [loadWebhooks, latestResult, messages]);
 
   // Sync passbook when latestResult confirms a transaction
   useEffect(() => {
@@ -175,6 +216,8 @@ export const MobileDevice: React.FC<MobileDeviceProps> = ({
           method: 'upi_circle',
           status: 'CAPTURED',
           verified: latestResult.signature_verified ?? true,
+          idempotencyKey: latestResult.idempotency_key,
+          attemptNumber: latestResult.attempt_number || 1,
         };
 
         return [newEntry, ...prev];
@@ -220,6 +263,8 @@ export const MobileDevice: React.FC<MobileDeviceProps> = ({
           method: msg.payload.payment_method || 'upi_circle',
           status: 'CAPTURED',
           verified: msg.payload.signature_verified ?? true,
+          idempotencyKey: msg.payload.idempotency_key,
+          attemptNumber: msg.payload.attempt_number,
         };
         updated = [newEntry, ...updated];
       }
@@ -304,33 +349,33 @@ export const MobileDevice: React.FC<MobileDeviceProps> = ({
             </span>
           </div>
 
-          {/* Top Navigation Toggle: UPI Mandate vs Passbook */}
-          <div style={{ display: 'flex', gap: '0.4rem', marginBottom: '0.85rem' }}>
+          {/* Top Navigation Toggle: 3 Tabs (Mandates, Passbook, Webhooks) */}
+          <div style={{ display: 'flex', gap: '0.35rem', marginBottom: '0.85rem' }}>
             <button
               onClick={() => setActiveTab('mandate')}
               style={{
                 flex: 1,
-                padding: '0.45rem 0.4rem',
+                padding: '0.45rem 0.25rem',
                 borderRadius: 6,
                 border: activeTab === 'mandate' ? '1.5px solid #012652' : '1px solid #cbd5e1',
                 background: activeTab === 'mandate' ? '#012652' : '#ffffff',
                 color: activeTab === 'mandate' ? '#ffffff' : '#475569',
-                fontSize: '0.73rem',
+                fontSize: '0.7rem',
                 fontWeight: 700,
                 cursor: 'pointer',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                gap: '0.3rem',
+                gap: '0.25rem',
                 transition: 'all 0.2s ease',
               }}
             >
-              <Zap size={13} />
+              <Zap size={12} />
               <span>Mandates</span>
               {pendingOffer && delegationMode === 'partial' && (
                 <span style={{
-                  width: 7,
-                  height: 7,
+                  width: 6,
+                  height: 6,
                   borderRadius: '50%',
                   background: '#f59e0b',
                   display: 'inline-block'
@@ -341,23 +386,48 @@ export const MobileDevice: React.FC<MobileDeviceProps> = ({
               onClick={() => setActiveTab('history')}
               style={{
                 flex: 1,
-                padding: '0.45rem 0.4rem',
+                padding: '0.45rem 0.25rem',
                 borderRadius: 6,
                 border: activeTab === 'history' ? '1.5px solid #012652' : '1px solid #cbd5e1',
                 background: activeTab === 'history' ? '#012652' : '#ffffff',
                 color: activeTab === 'history' ? '#ffffff' : '#475569',
-                fontSize: '0.73rem',
+                fontSize: '0.7rem',
                 fontWeight: 700,
                 cursor: 'pointer',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                gap: '0.3rem',
+                gap: '0.25rem',
                 transition: 'all 0.2s ease',
               }}
             >
-              <History size={13} />
+              <History size={12} />
               <span>Passbook ({passbook.length})</span>
+            </button>
+            <button
+              onClick={() => {
+                setActiveTab('webhooks');
+                loadWebhooks();
+              }}
+              style={{
+                flex: 1,
+                padding: '0.45rem 0.25rem',
+                borderRadius: 6,
+                border: activeTab === 'webhooks' ? '1.5px solid #012652' : '1px solid #cbd5e1',
+                background: activeTab === 'webhooks' ? '#012652' : '#ffffff',
+                color: activeTab === 'webhooks' ? '#ffffff' : '#475569',
+                fontSize: '0.7rem',
+                fontWeight: 700,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '0.25rem',
+                transition: 'all 0.2s ease',
+              }}
+            >
+              <Radio size={12} />
+              <span>Webhooks ({webhookEvents.length})</span>
             </button>
           </div>
 
@@ -548,19 +618,6 @@ export const MobileDevice: React.FC<MobileDeviceProps> = ({
                     </div>
                   )}
 
-                  {/* Architectural Highlight */}
-                  <div style={{
-                    fontSize: '0.65rem',
-                    color: '#92400e',
-                    background: 'rgba(254, 243, 199, 0.7)',
-                    padding: '0.35rem 0.45rem',
-                    borderRadius: 4,
-                    marginBottom: '0.65rem',
-                    lineHeight: 1.3
-                  }}>
-                    <strong>Single Atomic Approval:</strong> Fulfills entire recipe in 1 mandate. Prevents partial stock lock-in and MPIN fatigue.
-                  </div>
-
                   <div style={{ display: 'flex', gap: '0.45rem' }}>
                     <button
                       onClick={() => onConfirmTransaction('approve')}
@@ -603,7 +660,7 @@ export const MobileDevice: React.FC<MobileDeviceProps> = ({
                 </div>
               )}
 
-              {/* STATUS NOTIFICATIONS FEED */}
+              {/* STATUS NOTIFICATIONS & INTERACTIVE PAYMENT RECOVERY CARD */}
               <div style={{ flex: 1, overflowY: 'auto' }}>
                 <h4 style={{ fontSize: '0.78rem', color: '#0D94FB', marginBottom: '0.4rem', fontWeight: 700 }}>
                   Transaction Status
@@ -639,10 +696,10 @@ export const MobileDevice: React.FC<MobileDeviceProps> = ({
                   }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', color: '#b91c1c', marginBottom: '0.2rem' }}>
                       <XCircle size={15} />
-                      <strong style={{ fontSize: '0.82rem' }}>Transaction Declined</strong>
+                      <strong style={{ fontSize: '0.82rem' }}>Transaction Cancelled</strong>
                     </div>
                     <p style={{ fontSize: '0.74rem', color: '#475569' }}>
-                      Declined by restaurant manager. Zero funds transferred, inventory unchanged.
+                      Cancelled by manager. Zero funds transferred, all pantry holds released.
                     </p>
                   </div>
                 )}
@@ -692,6 +749,11 @@ export const MobileDevice: React.FC<MobileDeviceProps> = ({
                         Payment: {latestResult.payment_id}
                       </p>
                     )}
+                    {latestResult.idempotency_key && (
+                      <p style={{ fontSize: '0.68rem', color: '#0369a1', fontFamily: 'var(--font-mono)', marginTop: 1 }}>
+                        Key: {latestResult.idempotency_key}
+                      </p>
+                    )}
                     <div style={{
                       display: 'flex',
                       alignItems: 'center',
@@ -716,22 +778,135 @@ export const MobileDevice: React.FC<MobileDeviceProps> = ({
                   </div>
                 )}
 
-                {/* Case 3: Payment Failed */}
+                {/* Case 3: PILLAR C - INTERACTIVE PAYMENT RECOVERY CARD */}
                 {latestResult?.status === 'PAYMENT_FAILED' && (
                   <div className="fade-in" style={{
-                    background: '#fef2f2',
-                    border: '1px solid #fecaca',
+                    background: '#fff1f2',
+                    border: '1.5px solid #f43f5e',
                     borderRadius: 8,
                     padding: '0.75rem',
-                    marginBottom: '0.65rem'
+                    marginBottom: '0.65rem',
+                    boxShadow: '0 2px 10px rgba(244, 63, 94, 0.12)'
                   }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', color: '#b91c1c', marginBottom: '0.2rem' }}>
-                      <XCircle size={15} />
-                      <strong style={{ fontSize: '0.82rem' }}>Payment Failed</strong>
+                    {/* Header */}
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.35rem' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', color: '#be123c' }}>
+                        <AlertTriangle size={15} />
+                        <strong style={{ fontSize: '0.82rem', textTransform: 'uppercase' }}>
+                          {latestResult.error_code === 'GATEWAY_ERROR'
+                            ? 'Switch Outage (502)'
+                            : 'Payment Refused by Bank'}
+                        </strong>
+                      </div>
+                      <span style={{
+                        fontSize: '0.64rem',
+                        fontWeight: 800,
+                        padding: '0.12rem 0.4rem',
+                        borderRadius: 4,
+                        background: '#fee2e2',
+                        color: '#991b1b',
+                        border: '1px solid #fecaca'
+                      }}>
+                        {latestResult.error_code || 'BAD_REQUEST_ERROR'}
+                      </span>
                     </div>
-                    <p style={{ fontSize: '0.74rem', color: '#475569' }}>
-                      Razorpay payment processing error.
+
+                    {/* Diagnostics Grid */}
+                    <div style={{
+                      background: '#ffffff',
+                      border: '1px solid #fecdd3',
+                      borderRadius: 6,
+                      padding: '0.45rem 0.55rem',
+                      marginBottom: '0.45rem',
+                      fontSize: '0.68rem',
+                      fontFamily: 'var(--font-mono)',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '0.2rem',
+                    }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <span style={{ color: '#64748b' }}>Step:</span>
+                        <strong style={{ color: '#012652' }}>{latestResult.error_step || 'payment_authorization'}</strong>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <span style={{ color: '#64748b' }}>Source:</span>
+                        <strong style={{ color: '#012652' }}>{latestResult.error_source || 'gateway'}</strong>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <span style={{ color: '#64748b' }}>Target VPA:</span>
+                        <strong style={{ color: '#be123c' }}>{latestResult.vpa || 'failure@razorpay'}</strong>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <span style={{ color: '#64748b' }}>Idempotency:</span>
+                        <strong style={{ color: '#0284c7' }}>{latestResult.idempotency_key || 'idemp_ord_v1'}</strong>
+                      </div>
+                    </div>
+
+                    {/* Webhook Proof Badge */}
+                    <div style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.3rem',
+                      background: 'rgba(225, 29, 72, 0.08)',
+                      padding: '0.2rem 0.4rem',
+                      borderRadius: 4,
+                      fontSize: '0.66rem',
+                      color: '#9f1239',
+                      marginBottom: '0.5rem',
+                      fontWeight: 700,
+                    }}>
+                      <ShieldCheck size={12} color="#be123c" />
+                      <span>HMAC-SHA256 Verified Webhook: payment.failed</span>
+                    </div>
+
+                    <p style={{ fontSize: '0.71rem', color: '#475569', marginBottom: '0.6rem', lineHeight: 1.35 }}>
+                      {latestResult.error_description ||
+                        'Customer bank declined authorization for VPA failure@razorpay. Zero funds debited. Inventory holds preserved.'}
                     </p>
+
+                    {/* Recovery Action Buttons */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                      <button
+                        onClick={() => onRetryPayment && latestResult.order_id && onRetryPayment(latestResult.order_id)}
+                        disabled={isRetrying}
+                        style={{
+                          width: '100%',
+                          padding: '0.5rem',
+                          borderRadius: 6,
+                          background: '#012652',
+                          border: 'none',
+                          color: '#ffffff',
+                          fontSize: '0.74rem',
+                          fontWeight: 700,
+                          cursor: isRetrying ? 'not-allowed' : 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: '0.35rem',
+                          boxShadow: '0 2px 6px rgba(1, 38, 82, 0.2)',
+                        }}
+                      >
+                        <RefreshCw size={12} className={isRetrying ? 'spin' : ''} />
+                        <span>{isRetrying ? 'Retrying with Fresh Key v2...' : 'Retry with Backup UPI (Fresh Key)'}</span>
+                      </button>
+                      <button
+                        onClick={() => onCancelPayment && latestResult.order_id && onCancelPayment(latestResult.order_id)}
+                        disabled={isRetrying}
+                        style={{
+                          width: '100%',
+                          padding: '0.38rem',
+                          borderRadius: 6,
+                          background: '#ffffff',
+                          border: '1px solid #fca5a5',
+                          color: '#b91c1c',
+                          fontSize: '0.72rem',
+                          fontWeight: 600,
+                          cursor: isRetrying ? 'not-allowed' : 'pointer',
+                        }}
+                      >
+                        Cancel Order & Release Inventory
+                      </button>
+                    </div>
                   </div>
                 )}
 
@@ -905,7 +1080,7 @@ export const MobileDevice: React.FC<MobileDeviceProps> = ({
                         ))}
                       </div>
 
-                      {/* Cryptographic Proof Footer */}
+                      {/* Idempotency & Cryptographic Proof Footer */}
                       <div style={{
                         display: 'flex',
                         justifyContent: 'space-between',
@@ -915,7 +1090,7 @@ export const MobileDevice: React.FC<MobileDeviceProps> = ({
                         paddingTop: '0.15rem'
                       }}>
                         <span style={{ fontFamily: 'var(--font-mono)' }}>
-                          {entry.orderId.substring(0, 15)}...
+                          {entry.idempotencyKey ? `${entry.idempotencyKey.slice(0, 18)}...` : entry.orderId.substring(0, 15)}
                         </span>
                         <div style={{
                           display: 'flex',
@@ -925,7 +1100,7 @@ export const MobileDevice: React.FC<MobileDeviceProps> = ({
                           fontWeight: 700
                         }}>
                           <ShieldCheck size={11} />
-                          <span>HMAC-SHA256 Verified</span>
+                          <span>HMAC Verified</span>
                         </div>
                       </div>
                     </div>
@@ -935,32 +1110,178 @@ export const MobileDevice: React.FC<MobileDeviceProps> = ({
             </div>
           )}
 
-          {/* Footer toggle for simulated error */}
+          {/* TAB 3: PILLAR B - LIVE WEBHOOK PIPELINE INSPECTOR */}
+          {activeTab === 'webhooks' && (
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflowY: 'auto' }}>
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                marginBottom: '0.6rem'
+              }}>
+                <div>
+                  <h4 style={{ fontSize: '0.8rem', color: '#012652', margin: 0, fontWeight: 800 }}>
+                    Razorpay Webhook Stream
+                  </h4>
+                  <span style={{ fontSize: '0.65rem', color: '#64748b' }}>
+                    HMAC-SHA256 Ingested Events
+                  </span>
+                </div>
+                <button
+                  onClick={loadWebhooks}
+                  style={{
+                    fontSize: '0.65rem',
+                    fontWeight: 700,
+                    color: '#0284c7',
+                    background: '#eff6ff',
+                    padding: '0.15rem 0.4rem',
+                    borderRadius: 4,
+                    border: '1px solid #bfdbfe',
+                    cursor: 'pointer'
+                  }}
+                >
+                  Refresh
+                </button>
+              </div>
+
+              {webhookEvents.length === 0 ? (
+                <div style={{
+                  padding: '1.5rem 0.75rem',
+                  textAlign: 'center',
+                  background: '#f8fafc',
+                  borderRadius: 8,
+                  border: '1px dashed #cbd5e1',
+                  color: '#64748b',
+                  fontSize: '0.74rem'
+                }}>
+                  <Radio size={22} style={{ margin: '0 auto 0.35rem', opacity: 0.4, color: '#012652' }} />
+                  <span>No webhook events ingested yet.</span>
+                  <div style={{ fontSize: '0.68rem', marginTop: 4 }}>
+                    Run a procurement cycle to capture live webhooks.
+                  </div>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', paddingBottom: '0.5rem' }}>
+                  {webhookEvents.map((evt) => {
+                    const isCaptured = evt.event === 'payment.captured';
+                    const isExpanded = expandedWebhookId === evt.id;
+
+                    return (
+                      <div
+                        key={evt.id}
+                        className="fade-in"
+                        style={{
+                          background: '#ffffff',
+                          border: '1px solid #e2e8f0',
+                          borderLeft: `4px solid ${isCaptured ? '#10b981' : '#ef4444'}`,
+                          borderRadius: 6,
+                          padding: '0.55rem 0.65rem',
+                          fontSize: '0.7rem',
+                        }}
+                      >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.2rem' }}>
+                          <span style={{
+                            fontWeight: 800,
+                            color: isCaptured ? '#065f46' : '#991b1b',
+                            background: isCaptured ? '#d1fae5' : '#fee2e2',
+                            padding: '0.1rem 0.35rem',
+                            borderRadius: 4,
+                            fontSize: '0.66rem'
+                          }}>
+                            {evt.event}
+                          </span>
+                          <span style={{ fontSize: '0.62rem', color: '#94a3b8' }}>
+                            {new Date(evt.receivedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                          </span>
+                        </div>
+
+                        <div style={{ color: '#334155', fontFamily: 'var(--font-mono)', fontSize: '0.67rem', margin: '0.2rem 0' }}>
+                          <div>Order: {evt.orderId}</div>
+                          {evt.paymentId && <div>Payment: {evt.paymentId}</div>}
+                          {evt.errorCode && <div style={{ color: '#dc2626' }}>Error: {evt.errorCode} ({evt.errorStep})</div>}
+                        </div>
+
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '0.3rem' }}>
+                          <div style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '0.2rem',
+                            color: evt.signatureVerified ? '#059669' : '#dc2626',
+                            fontWeight: 700,
+                            fontSize: '0.64rem'
+                          }}>
+                            <ShieldCheck size={11} />
+                            <span>{evt.signatureVerified ? 'HMAC-SHA256 Valid ✓' : 'Invalid Signature ✗'}</span>
+                          </div>
+                          <button
+                            onClick={() => setExpandedWebhookId(isExpanded ? null : evt.id)}
+                            style={{
+                              border: 'none',
+                              background: 'transparent',
+                              color: '#0284c7',
+                              fontSize: '0.64rem',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 2,
+                            }}
+                          >
+                            <Code size={11} />
+                            <span>{isExpanded ? 'Hide Payload' : 'Inspect JSON'}</span>
+                          </button>
+                        </div>
+
+                        {isExpanded && evt.rawPayload && (
+                          <div style={{
+                            marginTop: '0.4rem',
+                            background: '#0f172a',
+                            color: '#38bdf8',
+                            padding: '0.4rem',
+                            borderRadius: 4,
+                            fontFamily: 'var(--font-mono)',
+                            fontSize: '0.62rem',
+                            overflowX: 'auto',
+                            maxHeight: 120
+                          }}>
+                            <pre style={{ margin: 0 }}>{JSON.stringify(evt.rawPayload, null, 2)}</pre>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Footer simulation mode indicator */}
           <div style={{
             marginTop: 'auto',
-            paddingTop: '0.65rem',
+            paddingTop: '0.6rem',
             borderTop: '1px solid #f1f5f9',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
-            fontSize: '0.7rem',
+            fontSize: '0.68rem',
             color: '#64748b'
           }}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', cursor: 'pointer' }}>
-              <input
-                type="checkbox"
-                checked={simulatePaymentFail}
-                onChange={(e) => setSimulatePaymentFail(e.target.checked)}
-                style={{ cursor: 'pointer' }}
-              />
-              <span style={{ color: simulatePaymentFail ? '#dc2626' : '#64748b', fontWeight: 600 }}>
-                Simulate Payment Error
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+              <span style={{
+                width: 7,
+                height: 7,
+                borderRadius: '50%',
+                background: simulationMode === 'happy' ? '#10b981' : '#ef4444'
+              }} />
+              <span style={{ fontWeight: 700, color: '#012652' }}>
+                Mode: {simulationMode === 'bank_decline' ? 'Bank Decline (failure@razorpay)' : 'Happy Path (success@razorpay)'}
               </span>
-            </label>
-            <span style={{ color: '#012652', fontWeight: 700 }}>Razorpay Test</span>
+            </div>
+            <span style={{ color: '#0D94FB', fontWeight: 800 }}>Razorpay Rail</span>
           </div>
         </div>
       </div>
     </div>
   );
 };
+
+export default MobileDevice;

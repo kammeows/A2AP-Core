@@ -1,4 +1,14 @@
-import { Envelope, InventoryItem, BuyerInventory, PolicyConfig, NegotiationResult, OfferPayload, PurchasedItem } from '../types';
+import {
+  Envelope,
+  InventoryItem,
+  BuyerInventory,
+  PolicyConfig,
+  NegotiationResult,
+  OfferPayload,
+  PurchasedItem,
+  SimulationMode,
+  WebhookEventRecord,
+} from '../types';
 
 const API_BASE = '/api';
 
@@ -58,6 +68,7 @@ export async function updatePolicy(config: Partial<PolicyConfig>): Promise<{ con
 
 export async function triggerNegotiation(params: {
   scenario?: 'happy' | 'failure' | 'custom';
+  simulationMode?: SimulationMode;
   buyerStockKg?: number;
   sellerStockKg?: number;
   buyerTargetStockKg?: number;
@@ -68,6 +79,7 @@ export async function triggerNegotiation(params: {
   itemsToProcure?: Array<{ item: string; quantity: number }>;
   customRfq?: any;
   sellerInventories?: Record<string, Record<string, number>>;
+  buyerVpa?: string;
 }): Promise<NegotiationResult> {
   const res = await fetch(`${API_BASE}/negotiate`, {
     method: 'POST',
@@ -87,6 +99,7 @@ export async function confirmTransaction(params: {
   success: boolean;
   status: string;
   order_id?: string;
+  payment_id?: string;
   total_amount?: number;
   message?: string;
   buyer_stock?: number;
@@ -99,6 +112,44 @@ export async function confirmTransaction(params: {
     body: JSON.stringify(params),
   });
   if (!res.ok) throw new Error(`Failed to confirm transaction: ${res.statusText}`);
+  return res.json();
+}
+
+export async function retryPayment(params: {
+  orderId: string;
+  threadId?: string;
+  buyerVpa?: string;
+}): Promise<NegotiationResult> {
+  const res = await fetch(`${API_BASE}/payments/retry`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  });
+  if (!res.ok) throw new Error(`Failed to retry payment: ${res.statusText}`);
+  return res.json();
+}
+
+export async function cancelOrder(params: {
+  orderId: string;
+  threadId?: string;
+  reason?: string;
+}): Promise<{ success: boolean; status: string; message: string }> {
+  const res = await fetch(`${API_BASE}/payments/cancel`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  });
+  if (!res.ok) throw new Error(`Failed to cancel order: ${res.statusText}`);
+  return res.json();
+}
+
+export async function fetchWebhookEvents(): Promise<{
+  success: boolean;
+  count: number;
+  events: WebhookEventRecord[];
+}> {
+  const res = await fetch(`${API_BASE}/payments/webhook/events`);
+  if (!res.ok) throw new Error(`Failed to fetch webhooks: ${res.statusText}`);
   return res.json();
 }
 

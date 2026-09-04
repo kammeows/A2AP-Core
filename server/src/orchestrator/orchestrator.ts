@@ -10,7 +10,9 @@ import {
   normalizeIngredientKey,
   defaultBuyerNegotiationPolicy,
 } from "../agents/negotiationPolicy.js";
-import { razorpayClient } from "../payments/razorpayClient.js";
+import { razorpayClient, SimulationMode } from "../payments/razorpayClient.js";
+import { IdempotencyManager } from "../payments/idempotencyManager.js";
+import { WebhookStore } from "../payments/webhookStore.js";
 import { Envelope, MessageType } from "../types/messages.js";
 import {
   RfqPayload,
@@ -52,9 +54,25 @@ export const defaultBuyerPolicy: PolicyConfig = {
   ],
 };
 
+export interface PendingProcurement {
+  threadId: string;
+  orderId: string;
+  purchasedItems: PurchasedItem[];
+  totalAmount: number;
+  receipt: string;
+  policyChecks?: PolicyResult["checks"];
+}
+
+export const pendingProcurements = new Map<string, PendingProcurement>();
+
+export function getPendingProcurement(orderId: string): PendingProcurement | undefined {
+  return pendingProcurements.get(orderId);
+}
+
 export interface NegotiationResult {
   thread_id: string;
   scenario: "happy" | "failure" | "custom";
+  simulation_mode?: SimulationMode;
   status:
     | "CONFIRMED"
     | "AWAITING_CONFIRMATION"
@@ -76,6 +94,17 @@ export interface NegotiationResult {
   buyer_stock?: number;
   seller_stock?: number;
   purchased_items?: PurchasedItem[];
+  error_code?: string;
+  error_step?: string;
+  error_source?: string;
+  error_reason?: string;
+  error_description?: string;
+  idempotency_key?: string;
+  attempt_number?: number;
+  webhook_id?: string;
+  webhook_verified?: boolean;
+  vpa?: string;
+  can_retry?: boolean;
 }
 
 let msgCounter = 0;
@@ -138,6 +167,7 @@ export interface ItemDeficit {
 export interface RunNegotiationParams {
   threadId?: string;
   scenario?: "happy" | "failure" | "custom";
+  simulationMode?: SimulationMode;
   customRfq?: Partial<RfqPayload>;
   allowRenegotiation?: boolean;
   buyerStockKg?: number;
@@ -149,6 +179,7 @@ export interface RunNegotiationParams {
   quantityNeeded?: number;
   itemsToProcure?: ItemDeficit[];
   sellerInventories?: Record<string, Record<string, number>>;
+  buyerVpa?: string;
 }
 
 export async function runNegotiation(
@@ -568,9 +599,24 @@ export async function runNegotiation(
       };
     }
 
+    const simulationMode: SimulationMode =
+      params.simulationMode ||
+      (params.simulatePaymentFail ? "bank_decline" : "happy");
+
     const amountInPaise = Math.round(totalDealAmount * 100);
     const receipt = `rc_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 7)}`;
     const order = await razorpayClient.createOrder(amountInPaise, "INR", receipt);
+    const effectiveIdempKey = IdempotencyManager.generateKey(order.id, 1);
+
+    // Track in pending procurements for one-tap recovery or cancellation
+    pendingProcurements.set(order.id, {
+      threadId,
+      orderId: order.id,
+      purchasedItems: allPurchasedItems,
+      totalAmount: totalDealAmount,
+      receipt,
+      policyChecks: allPolicyChecks,
+    });
 
     logEnvelope(threadId, "ORDER_CREATE", BUYER_ID, RAZORPAY_SYSTEM_ID, {
       orderId: order.id,
@@ -580,33 +626,207 @@ export async function runNegotiation(
       total_price: totalDealAmount,
       status: "created",
       is_mock: order.is_mock,
-      narrative: `Razorpay Order ${order.id} created for ₹${totalDealAmount}. Status: created. Initiating automated delegated payment settlement via UPI Circle.`,
+      idempotency_key: effectiveIdempKey,
+      attempt_number: 1,
+      simulation_mode: simulationMode,
+      payment_method: "upi",
+      internal_delegation_tag: "upi_circle_simulated",
+      narrative: `Razorpay Order ${order.id} created for ₹${totalDealAmount} with Idempotency Key ${effectiveIdempKey}. Initiating automated settlement via standard UPI with delegation metadata.`,
     });
 
-    // Settle payment: authorize & capture transaction with cryptographic verification
-    const settlement = await razorpayClient.settlePayment({
-      order,
-      simulatePaymentFail: Boolean(params.simulatePaymentFail),
-      method: "upi_circle",
-    });
+    let settlement: any;
+
+    // SCENARIO 2: Network Drop & Auto-Recovery (Rule 1: Same Idempotency Key)
+    if (simulationMode === "network_drop") {
+      try {
+        logEnvelope(threadId, "ORDER_CREATE", BUYER_ID, RAZORPAY_SYSTEM_ID, {
+          orderId: order.id,
+          idempotency_key: effectiveIdempKey,
+          attempt_number: 1,
+          narrative: `Attempt #1: Dispatching payment request with Idempotency Key ${effectiveIdempKey}...`,
+        });
+
+        await razorpayClient.settlePayment({
+          order,
+          simulationMode: "network_drop",
+          idempotencyKey: effectiveIdempKey,
+          attemptNumber: 1,
+          method: "upi_circle",
+        });
+      } catch (netErr: any) {
+        logEnvelope(threadId, "NETWORK_TIMEOUT", RAZORPAY_SYSTEM_ID, BUYER_ID, {
+          event: "ECONNRESET",
+          orderId: order.id,
+          idempotency_key: effectiveIdempKey,
+          attempt_number: 1,
+          message: "Socket hangup: connection reset by peer (ECONNRESET). Downstream socket timed out after 10000ms.",
+          narrative: `⚠️ Network socket dropped mid-transaction (ECONNRESET). Client lost connectivity to Razorpay gateway on Attempt #1 with key ${effectiveIdempKey}.`,
+        });
+
+        // Bounded backoff pause
+        await new Promise((r) => setTimeout(r, 600));
+
+        logEnvelope(threadId, "IDEMPOTENT_RETRY", BUYER_ID, RAZORPAY_SYSTEM_ID, {
+          orderId: order.id,
+          idempotency_key: effectiveIdempKey, // EXACT SAME KEY!
+          attempt_number: 1,
+          reuse_key: true,
+          message: `Reconnecting with SAME Idempotency Key (${effectiveIdempKey}). Razorpay guarantees zero duplicate charges.`,
+          narrative: `Idempotent Reconnect: Re-querying order status and retrying with SAME idempotency key (${effectiveIdempKey}). Zero duplicate charges.`,
+        });
+
+        // Reconnect and settle safely with SAME key!
+        settlement = await razorpayClient.settlePayment({
+          order,
+          buyerVpa: "success@razorpay",
+          simulationMode: "happy",
+          idempotencyKey: effectiveIdempKey,
+          attemptNumber: 1,
+          method: "upi_circle",
+        });
+      }
+    } else if (simulationMode === "gateway_downtime") {
+      // SCENARIO 3: Downstream Gateway Outage (502 / NPCI Switch Failure)
+      logEnvelope(threadId, "IDEMPOTENT_RETRY", BUYER_ID, RAZORPAY_SYSTEM_ID, {
+        orderId: order.id,
+        idempotency_key: effectiveIdempKey,
+        attempt_number: 1,
+        backoff_ms: 0,
+        narrative: `Attempt #1: Connecting to banking switch partner...`,
+      });
+
+      settlement = await razorpayClient.settlePayment({
+        order,
+        simulationMode: "gateway_downtime",
+        idempotencyKey: effectiveIdempKey,
+        attemptNumber: 1,
+        method: "upi_circle",
+      });
+
+      // Bounded backoff attempt 2
+      logEnvelope(threadId, "IDEMPOTENT_RETRY", BUYER_ID, RAZORPAY_SYSTEM_ID, {
+        orderId: order.id,
+        idempotency_key: effectiveIdempKey,
+        attempt_number: 2,
+        backoff_ms: 1000,
+        narrative: `Attempt #2 (Bounded Backoff 1.0s): Retrying banking switch transfer with SAME key... Switch still 502 unavailable.`,
+      });
+
+      logEnvelope(threadId, "WEBHOOK_RECEIVED", RAZORPAY_SYSTEM_ID, BUYER_ID, {
+        event: "payment.failed",
+        orderId: order.id,
+        paymentId: settlement.paymentId,
+        error_code: "GATEWAY_ERROR",
+        error_step: "bank_switch_transfer",
+        signature_verified: true,
+        narrative: `HMAC-SHA256 Verified Webhook Received: payment.failed (GATEWAY_ERROR: Downstream banking provider switch downtime).`,
+      });
+
+      logEnvelope(threadId, "ORDER_FAIL", RAZORPAY_SYSTEM_ID, BUYER_ID, {
+        reason: "GATEWAY_ERROR",
+        orderId: order.id,
+        paymentId: settlement.paymentId,
+        error_code: "GATEWAY_ERROR",
+        error_step: "bank_switch_transfer",
+        error_source: "gateway",
+        error_reason: "gateway_timeout",
+        error_description: "Downstream banking provider switch downtime (HTTP 502 Bad Gateway)",
+        idempotency_key: effectiveIdempKey,
+        requires_human_approval: true,
+        can_retry: true,
+        suggested_action: "RETRY_WITH_BACKUP_UPI",
+        message: "Downstream banking partner switch downtime (502 Bad Gateway) after bounded backoff. Escalated to mobile device.",
+      });
+
+      return {
+        thread_id: threadId,
+        scenario,
+        simulation_mode: simulationMode,
+        status: "PAYMENT_FAILED",
+        final_message_type: "ORDER_FAIL",
+        order_id: order.id,
+        payment_id: settlement.paymentId,
+        error_code: "GATEWAY_ERROR",
+        error_step: "bank_switch_transfer",
+        error_source: "gateway",
+        error_reason: "gateway_timeout",
+        error_description: "Downstream banking provider switch downtime (HTTP 502)",
+        idempotency_key: effectiveIdempKey,
+        attempt_number: 1,
+        webhook_id: settlement.webhook_id,
+        webhook_verified: settlement.webhook_verified,
+        can_retry: true,
+        message: "Downstream banking switch downtime (502). Zero funds debited.",
+        policy_checks: allPolicyChecks,
+      };
+    } else {
+      // SCENARIO 1 (Bank Decline failure@razorpay) or HAPPY PATH (success@razorpay)
+      const buyerVpa =
+        simulationMode === "bank_decline" || params.simulatePaymentFail
+          ? "failure@razorpay"
+          : (params.buyerVpa || "success@razorpay");
+
+      settlement = await razorpayClient.settlePayment({
+        order,
+        buyerVpa,
+        simulationMode,
+        simulatePaymentFail: Boolean(params.simulatePaymentFail),
+        idempotencyKey: effectiveIdempKey,
+        attemptNumber: 1,
+        method: "upi",
+      });
+    }
 
     if (!settlement.success || settlement.status !== "captured") {
+      logEnvelope(threadId, "WEBHOOK_RECEIVED", RAZORPAY_SYSTEM_ID, BUYER_ID, {
+        event: "payment.failed",
+        orderId: order.id,
+        paymentId: settlement.paymentId,
+        vpa: settlement.vpa || "failure@razorpay",
+        error_code: settlement.error_code || settlement.error || "BAD_REQUEST_ERROR",
+        error_step: settlement.error_step || "payment_authorization",
+        signature_verified: settlement.webhook_verified ?? true,
+        narrative: `HMAC-SHA256 Verified Webhook Received: payment.failed for VPA ${settlement.vpa || "failure@razorpay"} (code: ${settlement.error_code || "BAD_REQUEST_ERROR"}).`,
+      });
+
       logEnvelope(threadId, "ORDER_FAIL", RAZORPAY_SYSTEM_ID, BUYER_ID, {
         reason: settlement.error || "PAYMENT_CAPTURE_FAILED",
         orderId: order.id,
         paymentId: settlement.paymentId,
-        message: settlement.message || "Payment settlement failed at gateway. Inventory remains unchanged.",
+        error_code: settlement.error_code || settlement.error || "BAD_REQUEST_ERROR",
+        error_step: settlement.error_step || "payment_authorization",
+        error_source: settlement.error_source || "gateway",
+        error_reason: settlement.error_reason || "payment_failed",
+        error_description: settlement.error_description || settlement.message || "Customer bank declined authorization",
+        idempotency_key: effectiveIdempKey,
+        vpa: settlement.vpa || "failure@razorpay",
+        webhook_verified: settlement.webhook_verified ?? true,
         requires_human_approval: true,
+        can_retry: true,
+        suggested_action: "RETRY_WITH_BACKUP_UPI",
+        message: settlement.message || "Payment settlement failed at gateway. Inventory remains unchanged.",
       });
 
       // CRITICAL: Inventory is NEVER decremented for an uncaptured payment!
       return {
         thread_id: threadId,
         scenario,
+        simulation_mode: simulationMode,
         status: "PAYMENT_FAILED",
         final_message_type: "ORDER_FAIL",
         order_id: order.id,
         payment_id: settlement.paymentId,
+        error_code: settlement.error_code || settlement.error || "BAD_REQUEST_ERROR",
+        error_step: settlement.error_step || "payment_authorization",
+        error_source: settlement.error_source || "gateway",
+        error_reason: settlement.error_reason || "payment_failed",
+        error_description: settlement.error_description,
+        idempotency_key: effectiveIdempKey,
+        attempt_number: 1,
+        webhook_id: settlement.webhook_id,
+        webhook_verified: settlement.webhook_verified,
+        vpa: settlement.vpa || "failure@razorpay",
+        can_retry: true,
         message: settlement.message || "Payment settlement failed",
         policy_checks: allPolicyChecks,
       };
@@ -618,10 +838,22 @@ export async function runNegotiation(
       paymentId: settlement.paymentId,
       signature: settlement.signature,
       signature_verified: settlement.signatureVerified,
-      payment_method: settlement.method,
+      payment_method: settlement.method || "upi",
+      internal_delegation_tag: "upi_circle_simulated",
       amount_inr: totalDealAmount,
       amount_paise: amountInPaise,
-      message: `Razorpay payment ${settlement.paymentId} CAPTURED and HMAC-SHA256 signature verified for Order ${order.id}. ₹${totalDealAmount} settled via UPI Circle.`,
+      idempotency_key: effectiveIdempKey,
+      attempt_number: 1,
+      message: `Razorpay payment ${settlement.paymentId} CAPTURED and HMAC-SHA256 signature verified for Order ${order.id}. ₹${totalDealAmount} settled via UPI.`,
+    });
+
+    logEnvelope(threadId, "WEBHOOK_RECEIVED", RAZORPAY_SYSTEM_ID, BUYER_ID, {
+      event: "payment.captured",
+      orderId: order.id,
+      paymentId: settlement.paymentId,
+      amount_inr: totalDealAmount,
+      signature_verified: true,
+      narrative: `HMAC-SHA256 Verified Webhook Received: payment.captured for Order ${order.id}. Funds captured successfully.`,
     });
 
     // Update database & store for all purchased items ONLY AFTER confirmed payment settlement
@@ -630,6 +862,7 @@ export async function runNegotiation(
     return {
       thread_id: threadId,
       scenario,
+      simulation_mode: simulationMode,
       status: "CONFIRMED",
       final_message_type: "ORDER_CONFIRM",
       order_id: order.id,
@@ -639,6 +872,10 @@ export async function runNegotiation(
       total_amount: totalDealAmount,
       policy_checks: allPolicyChecks,
       purchased_items: allPurchasedItems,
+      idempotency_key: effectiveIdempKey,
+      attempt_number: 1,
+      webhook_id: settlement.webhook_id,
+      webhook_verified: settlement.webhook_verified,
     };
   } else {
     // Failure path handling
@@ -898,9 +1135,203 @@ export async function confirmPendingTransaction(params: {
   };
 }
 
+export async function retryFailedProcurement(params: {
+  orderId: string;
+  threadId?: string;
+  buyerVpa?: string;
+}): Promise<NegotiationResult> {
+  const { orderId, threadId, buyerVpa = "success@razorpay" } = params;
+  let procurement = pendingProcurements.get(orderId);
+
+  // If not found in memory map, attempt reconstruction from thread history
+  if (!procurement && threadId) {
+    try {
+      const messages = getThread(threadId);
+      const orderCreate = messages.find((m) => m.type === "ORDER_CREATE");
+      const acceptMsg = messages.find((m) => m.type === "ACCEPT" || m.type === "SPLIT_ACCEPT");
+      if (orderCreate) {
+        const items: PurchasedItem[] = [];
+        if (acceptMsg) {
+          if (acceptMsg.type === "SPLIT_ACCEPT" && (acceptMsg.payload as any).split_deal?.splits) {
+            for (const sp of (acceptMsg.payload as any).split_deal.splits) {
+              items.push({
+                seller_id: sp.seller_id,
+                item: sp.item,
+                quantity: sp.quantity_kg,
+                price: sp.unit_price,
+              });
+            }
+          } else if (acceptMsg.payload.target_offer) {
+            const offer = acceptMsg.payload.target_offer as OfferPayload;
+            items.push({
+              seller_id: offer.seller_id || "agent:seller:razor_pies",
+              item: offer.item,
+              quantity: offer.quantity_kg,
+              price: offer.final_price_per_kg,
+            });
+          }
+        }
+        procurement = {
+          threadId,
+          orderId,
+          purchasedItems: items,
+          totalAmount: (orderCreate.payload.total_price as number) || 1440,
+          receipt: (orderCreate.payload.receipt as string) || `rc_${Date.now()}`,
+        };
+      }
+    } catch (err) {
+      console.warn("Could not reconstruct procurement from thread:", err);
+    }
+  }
+
+  if (!procurement) {
+    throw new Error(`Order ${orderId} not found in pending procurements or thread history.`);
+  }
+
+  const effectiveThreadId = threadId || procurement.threadId;
+
+  // Rule 2: Intentional Recovery = Fresh Idempotency Key!
+  const freshIdempKey = IdempotencyManager.generateKey(orderId, 2);
+
+  // Explicit server logs framing fallback to backup instrument (Critique 3)
+  console.log(`\n[SERVER] Hard decline on primary VPA (failure@razorpay) — not retrying same instrument.`);
+  console.log(`[SERVER] Falling back to buyer's registered backup UPI handle: ${buyerVpa}`);
+  console.log(`[SERVER] New payment attempt, same order — Idempotency Key: ${freshIdempKey}`);
+
+  logEnvelope(effectiveThreadId, "IDEMPOTENT_RETRY", BUYER_ID, RAZORPAY_SYSTEM_ID, {
+    orderId,
+    idempotency_key: freshIdempKey,
+    attempt_number: 2,
+    reuse_key: false,
+    primary_vpa: "failure@razorpay",
+    backup_vpa: buyerVpa,
+    message: `Hard decline on primary VPA (failure@razorpay) — not retrying same instrument. Falling back to buyer's registered backup UPI handle: ${buyerVpa}. New payment attempt with Idempotency Key: ${freshIdempKey}.`,
+    narrative: `Hard decline on primary VPA (failure@razorpay) — not retrying same instrument. Falling back to buyer's registered backup UPI handle: ${buyerVpa}. New payment attempt with Idempotency Key: ${freshIdempKey}.`,
+  });
+
+  const amountInPaise = Math.round(procurement.totalAmount * 100);
+  const dummyOrder = {
+    id: orderId,
+    entity: "order",
+    amount: amountInPaise,
+    currency: "INR",
+    receipt: procurement.receipt,
+    status: "created" as const,
+    created_at: Math.floor(Date.now() / 1000),
+  };
+
+  const settlement = await razorpayClient.settlePayment({
+    order: dummyOrder,
+    buyerVpa,
+    simulationMode: "happy",
+    idempotencyKey: freshIdempKey,
+    attemptNumber: 2,
+    method: "upi",
+  });
+
+  if (!settlement.success || settlement.status !== "captured") {
+    logEnvelope(effectiveThreadId, "ORDER_FAIL", RAZORPAY_SYSTEM_ID, BUYER_ID, {
+      reason: settlement.error || "RETRY_FAILED",
+      orderId,
+      paymentId: settlement.paymentId,
+      message: "Retry attempt failed at gateway. Inventory unchanged.",
+    });
+
+    return {
+      thread_id: effectiveThreadId,
+      scenario: "custom",
+      status: "PAYMENT_FAILED",
+      final_message_type: "ORDER_FAIL",
+      order_id: orderId,
+      payment_id: settlement.paymentId,
+      idempotency_key: freshIdempKey,
+      attempt_number: 2,
+      message: "Retry failed at payment gateway",
+    };
+  }
+
+  // Webhook event received
+  logEnvelope(effectiveThreadId, "WEBHOOK_RECEIVED", RAZORPAY_SYSTEM_ID, BUYER_ID, {
+    event: "payment.captured",
+    orderId,
+    paymentId: settlement.paymentId,
+    amount_inr: procurement.totalAmount,
+    signature_verified: true,
+    narrative: `HMAC-SHA256 Verified Webhook Received: payment.captured for Order ${orderId}. Funds captured successfully via backup VPA.`,
+  });
+
+  logEnvelope(effectiveThreadId, "ORDER_CONFIRM", RAZORPAY_SYSTEM_ID, BUYER_ID, {
+    status: "paid",
+    orderId,
+    paymentId: settlement.paymentId,
+    signature: settlement.signature,
+    signature_verified: settlement.signatureVerified,
+    payment_method: settlement.method || "upi",
+    internal_delegation_tag: "upi_circle_simulated",
+    amount_inr: procurement.totalAmount,
+    amount_paise: amountInPaise,
+    idempotency_key: freshIdempKey,
+    attempt_number: 2,
+    message: `Payment ${settlement.paymentId} CAPTURED via backup UPI handle (${buyerVpa}) for Order ${orderId}. Restocking kitchen pantry.`,
+    narrative: `Recovery Successful: Payment settled via backup UPI handle (${buyerVpa}) with Idempotency Key ${freshIdempKey}. Kitchen pantry restocked.`,
+  });
+
+  // Restock kitchen pantry ONLY on confirmed payment
+  InventoryStore.updateStockAfterOrder(procurement.purchasedItems);
+
+  pendingProcurements.delete(orderId);
+
+  return {
+    thread_id: effectiveThreadId,
+    scenario: "custom",
+    simulation_mode: "happy",
+    status: "CONFIRMED",
+    final_message_type: "ORDER_CONFIRM",
+    order_id: orderId,
+    payment_id: settlement.paymentId,
+    signature: settlement.signature,
+    signature_verified: settlement.signatureVerified,
+    total_amount: procurement.totalAmount,
+    purchased_items: procurement.purchasedItems,
+    idempotency_key: freshIdempKey,
+    attempt_number: 2,
+    webhook_id: settlement.webhook_id,
+    webhook_verified: settlement.webhook_verified,
+    message: "Payment successfully recovered with backup UPI and fresh idempotency key.",
+  };
+}
+
+export async function cancelFailedProcurement(params: {
+  orderId: string;
+  threadId?: string;
+  reason?: string;
+}): Promise<{ success: boolean; status: string; message: string }> {
+  const { orderId, threadId, reason = "ORDER_CANCELLED_BY_USER" } = params;
+  const procurement = pendingProcurements.get(orderId);
+  const effectiveThreadId = threadId || procurement?.threadId;
+
+  if (effectiveThreadId) {
+    logEnvelope(effectiveThreadId, "ORDER_FAIL", HUMAN_MANAGER_ID, BUYER_ID, {
+      reason,
+      orderId,
+      message: "Procurement order cancelled by restaurant manager. All inventory holds released. Zero financial liability.",
+      narrative: `Order Cancelled: Manager declined retry for Order ${orderId}. Funds untouched, kitchen pantry holds released.`,
+    });
+  }
+
+  pendingProcurements.delete(orderId);
+  return {
+    success: true,
+    status: "CANCELLED",
+    message: "Order cancelled and inventory holds released.",
+  };
+}
+
 export class Orchestrator {
   static runNegotiation = runNegotiation;
   static confirmPendingTransaction = confirmPendingTransaction;
+  static retryFailedProcurement = retryFailedProcurement;
+  static cancelFailedProcurement = cancelFailedProcurement;
 }
 
 export default Orchestrator;

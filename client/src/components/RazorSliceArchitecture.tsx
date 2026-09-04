@@ -22,7 +22,7 @@ import {
   ExternalLink,
   Award,
 } from "lucide-react";
-import { Envelope, NegotiationResult } from "../types";
+import { Envelope, NegotiationResult, SimulationMode } from "../types";
 
 export interface RazorSliceArchitectureProps {
   onRunAi: (
@@ -35,6 +35,8 @@ export interface RazorSliceArchitectureProps {
   messages?: Envelope[];
   onSelectMessage?: (messageId: string) => void;
   simulatePaymentFail?: boolean;
+  simulationMode?: SimulationMode;
+  setSimulationMode?: (mode: SimulationMode) => void;
 }
 
 export interface BuyerPantry {
@@ -151,6 +153,8 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
   messages = [],
   onSelectMessage,
   simulatePaymentFail = false,
+  simulationMode = "happy",
+  setSimulationMode,
 }) => {
   // 1. RazorSlice Buyer Stock State (Target stock absorbs multiple order cycles)
   const [buyerStock, setBuyerStock] = useState<BuyerPantry>({
@@ -879,7 +883,8 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
                 sellerInventoriesRef.current["agent:seller:razorcery_2"].milk,
               buyerTargetStockKg: TARGET_STOCK_LEVELS.flour,
               sellerInventories: currentSellerInventories,
-              simulatePaymentFail,
+              simulatePaymentFail: simulationMode === "bank_decline" || simulatePaymentFail,
+              simulationMode,
             });
             if (
               res &&
@@ -997,7 +1002,8 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
               sellerInventoriesRef.current["agent:seller:razorcery_2"].milk,
             buyerTargetStockKg: TARGET_STOCK_LEVELS.flour,
             sellerInventories: currentSellerInventories,
-            simulatePaymentFail,
+            simulatePaymentFail: simulationMode === "bank_decline" || simulatePaymentFail,
+            simulationMode,
           });
           if (
             res &&
@@ -1784,26 +1790,60 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
           >
             RazorSlice Kitchen & Multi-Seller A2A Negotiation Architecture
           </h2>
-          {simulatePaymentFail && (
-            <span
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: "0.3rem",
-                padding: "0.2rem 0.55rem",
-                borderRadius: 4,
-                background: "rgba(220, 38, 38, 0.2)",
-                border: "1px solid #ef4444",
-                color: "#fca5a5",
-                fontSize: "0.7rem",
-                fontWeight: 700,
-                letterSpacing: "0.02em",
-              }}
-            >
-              <AlertCircle size={12} color="#ef4444" />
-              Simulated Payment Error Active
-            </span>
-          )}
+          <span
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "0.3rem",
+              padding: "0.2rem 0.55rem",
+              borderRadius: 4,
+              background:
+                simulationMode === "happy"
+                  ? "rgba(16, 185, 129, 0.2)"
+                  : simulationMode === "bank_decline"
+                  ? "rgba(220, 38, 38, 0.2)"
+                  : simulationMode === "network_drop"
+                  ? "rgba(245, 158, 11, 0.2)"
+                  : simulationMode === "gateway_downtime"
+                  ? "rgba(234, 88, 12, 0.2)"
+                  : "rgba(168, 85, 247, 0.2)",
+              border: `1px solid ${
+                simulationMode === "happy"
+                  ? "#10b981"
+                  : simulationMode === "bank_decline"
+                  ? "#ef4444"
+                  : simulationMode === "network_drop"
+                  ? "#f59e0b"
+                  : simulationMode === "gateway_downtime"
+                  ? "#ea580c"
+                  : "#a855f7"
+              }`,
+              color:
+                simulationMode === "happy"
+                  ? "#6ee7b7"
+                  : simulationMode === "bank_decline"
+                  ? "#fca5a5"
+                  : simulationMode === "network_drop"
+                  ? "#fde68a"
+                  : simulationMode === "gateway_downtime"
+                  ? "#fdba74"
+                  : "#d8b4fe",
+              fontSize: "0.7rem",
+              fontWeight: 700,
+              letterSpacing: "0.02em",
+            }}
+          >
+            <AlertCircle size={12} />
+            {simulationMode === "happy"
+              ? "UPI Circle Active (success@razorpay)"
+              : simulationMode === "bank_decline"
+              ? "Simulated Bank Decline Active (failure@razorpay)"
+              : simulationMode === "network_drop"
+              ? "Simulated Socket Drop Active (ECONNRESET)"
+              : simulationMode === "gateway_downtime"
+              ? "Simulated NPCI Switch 502 Downtime"
+              : "Policy Cap Breach Demo Active"}
+          </span>
         </div>
 
         {/* Preset quick buttons */}
@@ -1871,6 +1911,81 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
             }}
           >
             Policy Cap Demo
+          </button>
+        </div>
+
+        {/* PILLAR C: Simulation Mode Selector Bar */}
+        <div
+          style={{
+            width: "100%",
+            display: "flex",
+            alignItems: "center",
+            gap: "0.45rem",
+            flexWrap: "wrap",
+            padding: "0.4rem 0.65rem",
+            background: "rgba(15, 23, 42, 0.6)",
+            borderRadius: 8,
+            border: "1px solid rgba(255, 255, 255, 0.12)",
+            marginTop: "0.5rem",
+          }}
+        >
+          <span
+            style={{
+              fontSize: "0.72rem",
+              fontWeight: 800,
+              color: "#38bdf8",
+              textTransform: "uppercase",
+              letterSpacing: "0.04em",
+              display: "flex",
+              alignItems: "center",
+              gap: 4,
+            }}
+          >
+            <span>⚡ Resilience Rail:</span>
+          </span>
+          <button
+            onClick={() => setSimulationMode && setSimulationMode("happy")}
+            style={{
+              padding: "0.28rem 0.65rem",
+              borderRadius: 6,
+              border:
+                simulationMode === "happy"
+                  ? "1.5px solid #10b981"
+                  : "1px solid rgba(255,255,255,0.12)",
+              background:
+                simulationMode === "happy"
+                  ? "rgba(16, 185, 129, 0.25)"
+                  : "rgba(255,255,255,0.03)",
+              color: simulationMode === "happy" ? "#6ee7b7" : "#94a3b8",
+              fontSize: "0.72rem",
+              fontWeight: 700,
+              cursor: "pointer",
+              transition: "all 0.15s ease",
+            }}
+          >
+            🟢 Happy Path (success@razorpay)
+          </button>
+          <button
+            onClick={() => setSimulationMode && setSimulationMode("bank_decline")}
+            style={{
+              padding: "0.28rem 0.65rem",
+              borderRadius: 6,
+              border:
+                simulationMode === "bank_decline"
+                  ? "1.5px solid #ef4444"
+                  : "1px solid rgba(255,255,255,0.12)",
+              background:
+                simulationMode === "bank_decline"
+                  ? "rgba(239, 68, 68, 0.25)"
+                  : "rgba(255,255,255,0.03)",
+              color: simulationMode === "bank_decline" ? "#fca5a5" : "#94a3b8",
+              fontSize: "0.72rem",
+              fontWeight: 700,
+              cursor: "pointer",
+              transition: "all 0.15s ease",
+            }}
+          >
+            🔴 Bank Decline (failure@razorpay)
           </button>
         </div>
       </div>

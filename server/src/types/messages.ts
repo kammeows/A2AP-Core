@@ -12,7 +12,10 @@ export type MessageType =
   | "POLICY_CHECK" // system-generated, deterministic policy engine evaluates the proposed deal
   | "ORDER_CREATE" // system event where razorpay orders api is called to make an order
   | "ORDER_CONFIRM"
-  | "ORDER_FAIL";
+  | "ORDER_FAIL"
+  | "NETWORK_TIMEOUT"
+  | "IDEMPOTENT_RETRY"
+  | "WEBHOOK_RECEIVED";
 
 export interface Envelope {
   message_id: string; // e.g. "msg_0007"

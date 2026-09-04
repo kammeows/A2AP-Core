@@ -12,7 +12,38 @@ export type MessageType =
   | "POLICY_CHECK"
   | "ORDER_CREATE"
   | "ORDER_CONFIRM"
-  | "ORDER_FAIL";
+  | "ORDER_FAIL"
+  | "NETWORK_TIMEOUT"
+  | "IDEMPOTENT_RETRY"
+  | "WEBHOOK_RECEIVED";
+
+export type SimulationMode =
+  | "happy"
+  | "bank_decline"
+  | "network_drop"
+  | "gateway_downtime"
+  | "policy_breach";
+
+export interface WebhookEventRecord {
+  id: string;
+  event: string;
+  orderId: string;
+  paymentId: string;
+  vpa?: string;
+  amount: number;
+  currency: string;
+  status: string;
+  method?: string;
+  errorCode?: string;
+  errorDescription?: string;
+  errorSource?: string;
+  errorStep?: string;
+  errorReason?: string;
+  signature: string;
+  signatureVerified: boolean;
+  receivedAt: string;
+  rawPayload?: any;
+}
 
 export interface AgentCard {
   agent_id: string;
@@ -134,6 +165,7 @@ export interface NegotiationResult {
   success: boolean;
   thread_id: string;
   scenario: "happy" | "failure" | "custom";
+  simulation_mode?: SimulationMode;
   status:
     | "CONFIRMED"
     | "AWAITING_CONFIRMATION"
@@ -155,4 +187,15 @@ export interface NegotiationResult {
   buyer_stock?: number;
   seller_stock?: number;
   purchased_items?: PurchasedItem[];
+  error_code?: string;
+  error_step?: string;
+  error_source?: string;
+  error_reason?: string;
+  error_description?: string;
+  idempotency_key?: string;
+  attempt_number?: number;
+  webhook_id?: string;
+  webhook_verified?: boolean;
+  vpa?: string;
+  can_retry?: boolean;
 }
