@@ -50,6 +50,7 @@ export interface OfferPayload {
   upsell_item?: UpsellItem;
   stock_limited?: boolean;
   stockLimited?: boolean;
+  requested_quantity_kg?: number;
 }
 
 export interface SplitAcceptItem {
@@ -67,6 +68,7 @@ export interface SplitAcceptPayload {
   total_cost: number;
   splits: SplitAcceptItem[];
   rationale: string;
+  unmet_quantity_kg?: number;
 }
 
 export interface PurchasedItem {

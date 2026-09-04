@@ -358,9 +358,11 @@ export async function runNegotiation(
 
     if (sellerOffers.length === 0) {
       logEnvelope(threadId, "REJECT", BUYER_ID, POLICY_ENGINE_ID, {
-        reason: "no_valid_stock_offers",
+        reason: "SOURCING_FAIL",
+        fail_reason: "no_valid_stock_offers",
         item,
-        narrative: `All matching sellers lack sufficient stock for ${item}. Procurement skipped for this item.`,
+        requested_quantity: deficitQuantity,
+        narrative: `All matching sellers lack sufficient stock for ${item} (SOURCING_FAIL: 0u fulfillable of ${deficitQuantity}u requested). Procurement skipped for this item.`,
       });
       continue;
     }
@@ -443,7 +445,8 @@ export async function runNegotiation(
     const buyerDecision: BuyerDecision = await buyerEvaluateOffer(
       sellerOffers[0],
       restaurantProfile,
-      sellerOffers
+      sellerOffers,
+      deficitQuantity
     );
 
     if (buyerDecision.declined_upsell_reason) {
@@ -484,7 +487,19 @@ export async function runNegotiation(
         split_deal: split,
         total_cost: split.total_cost,
         rationale: split.rationale,
+        unmet_quantity_kg: split.unmet_quantity_kg || 0,
       });
+
+      if (split.unmet_quantity_kg && split.unmet_quantity_kg > 0) {
+        logEnvelope(threadId, "INVENTORY_EVENT", BUYER_ID, "system", {
+          event: "SOURCING_SHORTFALL",
+          item: split.item,
+          requested_quantity: deficitQuantity,
+          fulfilled_quantity: split.total_quantity_kg,
+          unmet_quantity: split.unmet_quantity_kg,
+          narrative: `Sourcing shortfall: ${split.unmet_quantity_kg}u of ${split.item} could not be fulfilled (requested ${deficitQuantity}u, aggregate seller stock is only ${split.total_quantity_kg}u).`,
+        });
+      }
 
       for (const sp of split.splits) {
         allPurchasedItems.push({
@@ -505,6 +520,18 @@ export async function runNegotiation(
           buyerDecision.rationale ||
           `Proposed acceptance for ${itemChosenOffer.quantity_kg} units from ${itemWinningSellerId} at ₹${itemChosenOffer.total_price}.`,
       });
+
+      if (itemChosenOffer.quantity_kg < deficitQuantity) {
+        const shortfall = deficitQuantity - itemChosenOffer.quantity_kg;
+        logEnvelope(threadId, "INVENTORY_EVENT", BUYER_ID, "system", {
+          event: "SOURCING_SHORTFALL",
+          item: itemChosenOffer.item,
+          requested_quantity: deficitQuantity,
+          fulfilled_quantity: itemChosenOffer.quantity_kg,
+          unmet_quantity: shortfall,
+          narrative: `Sourcing shortfall: ${shortfall}u of ${itemChosenOffer.item} could not be fulfilled (requested ${deficitQuantity}u, single seller fulfilled ${itemChosenOffer.quantity_kg}u).`,
+        });
+      }
 
       allPurchasedItems.push({
         seller_id: itemWinningSellerId,

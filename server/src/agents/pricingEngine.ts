@@ -55,19 +55,23 @@ export function computeSellerOffer(
   const sortedTiers = [...state.tiers].sort((a, b) => a.minQty - b.minQty);
   const tier = [...sortedTiers].reverse().find((t) => offeredQty >= t.minQty);
   let discountPct = tier?.discountPct ?? 0;
-  let reason = "";
 
   if (state.stock <= 0) {
-    reason = `0 units available in stock, out of stock`;
-  } else if (tier) {
-    reason = `${offeredQty}u qualifies for the ${discountPct}% volume tier`;
-  } else if (state.stock >= 15 && offeredQty >= Math.max(4, Math.round(state.stock * 0.18))) {
-    // Dynamic stock-proportional inventory clearance discount:
-    // Seller has high surplus stock and buyer orders a sizable chunk
+    return {
+      item: state.item,
+      requestedQty,
+      offeredQty: 0,
+      stockLimited: true,
+      unitPrice: state.basePrice,
+      discountPct: 0,
+      totalPrice: 0,
+      reason: `0 units available in stock, out of stock`,
+    };
+  }
+
+  const isClearance = !tier && state.stock >= 15 && offeredQty >= Math.max(4, Math.round(state.stock * 0.18));
+  if (isClearance) {
     discountPct = 10;
-    reason = `${offeredQty}u order qualifies for 10% inventory clearance discount (${state.stock}u surplus stock on hand)`;
-  } else {
-    reason = `below any volume tier, base price applies`;
   }
 
   const rawTierPrice = Number((state.basePrice * (1 - discountPct / 100)).toFixed(2));
@@ -76,6 +80,17 @@ export function computeSellerOffer(
     ? Number((((state.basePrice - finalUnitPrice) / state.basePrice) * 100).toFixed(1))
     : 0;
   const totalPrice = Number((finalUnitPrice * offeredQty).toFixed(2));
+
+  let reason = "";
+  if (buyerAsk && buyerAsk > 0 && finalUnitPrice === buyerAsk) {
+    reason = `matched buyer's ask of ₹${buyerAsk}/unit — better than our ₹${rawTierPrice}/unit tier rate alone`;
+  } else if (tier) {
+    reason = `${tier.discountPct ?? 0}% volume tier applies`;
+  } else if (isClearance) {
+    reason = `${offeredQty}u order qualifies for 10% inventory clearance discount (${state.stock}u surplus stock on hand)`;
+  } else {
+    reason = `below any volume tier, base price applies`;
+  }
 
   return {
     item: state.item,
@@ -87,6 +102,57 @@ export function computeSellerOffer(
     totalPrice,
     reason,
   };
+}
+
+export interface AllocationLine {
+  sellerId: string;
+  quantity: number;
+  unitPrice: number;
+  cost: number;
+}
+
+export interface SplitOfferCandidate {
+  sellerId?: string;
+  seller_id?: string;
+  offeredQty?: number;
+  quantity_kg?: number;
+  unitPrice?: number;
+  final_price_per_kg?: number;
+}
+
+/**
+ * Greedily allocates order quantities across multiple sellers ordered by lowest unit price first.
+ * Never exceeds what each seller can supply, and tracks unmet quantity when aggregate stock falls short.
+ */
+export function allocateSplitAccept(
+  totalNeeded: number,
+  offers: SplitOfferCandidate[]
+): { allocation: AllocationLine[]; unmetQuantity: number } {
+  const normalized = offers.map((o) => ({
+    sellerId: o.sellerId || o.seller_id || "unknown",
+    offeredQty: o.offeredQty ?? o.quantity_kg ?? 0,
+    unitPrice: o.unitPrice ?? o.final_price_per_kg ?? 0,
+  }));
+
+  const sorted = [...normalized].sort((a, b) => a.unitPrice - b.unitPrice); // cheapest first
+  let remaining = totalNeeded;
+  const allocation: AllocationLine[] = [];
+
+  for (const offer of sorted) {
+    if (remaining <= 0) break;
+    const take = Math.min(remaining, offer.offeredQty); // never exceed what this seller can actually supply
+    if (take > 0) {
+      allocation.push({
+        sellerId: offer.sellerId,
+        quantity: take,
+        unitPrice: offer.unitPrice,
+        cost: Number((take * offer.unitPrice).toFixed(2)),
+      });
+      remaining -= take;
+    }
+  }
+
+  return { allocation, unmetQuantity: remaining }; // > 0 means log a genuine fulfillment shortfall, not silence
 }
 
 /**

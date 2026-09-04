@@ -4,7 +4,7 @@ import { runNegotiation } from "../orchestrator/orchestrator.js";
 import { InventoryStore } from "../inventory/inventoryStore.js";
 import { buyerEvaluateOffer, BuyerCatalogService } from "./buyerAgent.js";
 import { sellerRespondToRfq } from "./sellerAgent.js";
-import { computeSellerOffer, computeSellerQuote } from "./pricingEngine.js";
+import { computeSellerOffer, computeSellerQuote, allocateSplitAccept } from "./pricingEngine.js";
 import { ThreadStore } from "../thread/threadStore.js";
 import { seedDatabase } from "../db/seed.js";
 
@@ -531,5 +531,167 @@ describe("Multi-Seller Agent Network & Volume Negotiation", () => {
     assert.equal(offerCery2.discount_pct, 10);
     assert.equal(offerCery2.total_price, 18.90); // 7 * 2.70
     assert.ok(!offerCery2.rationale.includes("₹32"), "Must not cite ₹32 list price");
+  });
+
+  test("19. allocateSplitAccept allocates cheapest supplier first and tracks unmet quantity (Bug Fix)", () => {
+    // Exact scenario from split-payment-bug.md:
+    // Total needed: 37u flour
+    // RazorPies: 25u @ ₹5.80
+    // Razorcery-1: 35u @ ₹5.00
+    const offers = [
+      { sellerId: "agent:seller:razor_pies", offeredQty: 25, unitPrice: 5.80 },
+      { sellerId: "agent:seller:razorcery_1", offeredQty: 35, unitPrice: 5.00 },
+    ];
+
+    const result = allocateSplitAccept(37, offers);
+
+    // Bug 1 Fix: Exactly 37u allocated, unmetQuantity is 0 (not 25u)
+    assert.equal(result.unmetQuantity, 0);
+    const totalAllocated = result.allocation.reduce((sum, a) => sum + a.quantity, 0);
+    assert.equal(totalAllocated, 37);
+
+    // Bug 2 Fix: Prioritizes cheaper seller (Razorcery-1 @ ₹5.00) first up to availability (35u)
+    assert.equal(result.allocation.length, 2);
+    assert.equal(result.allocation[0].sellerId, "agent:seller:razorcery_1");
+    assert.equal(result.allocation[0].quantity, 35);
+    assert.equal(result.allocation[0].unitPrice, 5.00);
+    assert.equal(result.allocation[0].cost, 175.00);
+
+    // Remainder (2u) taken from pricier seller (RazorPies @ ₹5.80)
+    assert.equal(result.allocation[1].sellerId, "agent:seller:razor_pies");
+    assert.equal(result.allocation[1].quantity, 2);
+    assert.equal(result.allocation[1].unitPrice, 5.80);
+    assert.equal(result.allocation[1].cost, 11.60);
+
+    // Shortfall test: Buyer needs 70u when combined stock is only 60u
+    const shortfallResult = allocateSplitAccept(70, offers);
+    assert.equal(shortfallResult.unmetQuantity, 10);
+    assert.equal(shortfallResult.allocation.reduce((s, a) => s + a.quantity, 0), 60);
+  });
+
+  test("20. computeSellerOffer reason follows the real branch taken", () => {
+    const itemState = {
+      item: "flour",
+      stock: 50,
+      basePrice: 6.00,
+      tiers: [
+        { minQty: 5, discountPct: 10 },
+        { minQty: 12, discountPct: 20 },
+      ],
+      parLevel: 30,
+      overstockThresholdPct: 0.7,
+    };
+
+    // 1. Buyer ask matches willingness-to-pay (buyerAsk = 5.80 > tier price 5.40)
+    const offerMatched = computeSellerOffer(itemState, 7, 5.80);
+    assert.equal(offerMatched.unitPrice, 5.80);
+    assert.equal(
+      offerMatched.reason,
+      "matched buyer's ask of ₹5.8/unit — better than our ₹5.4/unit tier rate alone"
+    );
+
+    // 2. Buyer ask below tier price (buyerAsk = 5.00 < tier price 5.40) -> tier price applies
+    const offerTier = computeSellerOffer(itemState, 7, 5.00);
+    assert.equal(offerTier.unitPrice, 5.40);
+    assert.equal(offerTier.reason, "10% volume tier applies");
+
+    // 3. No buyer ask -> tier applies
+    const offerNoAsk = computeSellerOffer(itemState, 7);
+    assert.equal(offerNoAsk.unitPrice, 5.40);
+    assert.equal(offerNoAsk.reason, "10% volume tier applies");
+  });
+
+  test("21. Buyer evaluates split procurement across multi-sellers and proposes split deal for 37u", async () => {
+    const profile = {
+      restaurant_id: "agent:buyer:razorslice",
+      weekly_budget_cap: 2000,
+      per_transaction_cap: 1600,
+      quality_min: "Grade A",
+      max_price_per_kg: { flour: 35 },
+    };
+
+    // RazorPies: 25u @ ₹5.80
+    const offerPies = {
+      seller_id: "agent:seller:razor_pies",
+      item: "flour",
+      quantity_kg: 25,
+      quality: "Grade A",
+      base_price_per_kg: 8,
+      discount_pct: 27.5,
+      discount_reason: "volume_tier",
+      final_price_per_kg: 5.8,
+      total_price: 145,
+      delivery_by: "2026-08-28T12:00:00Z",
+      offer_expires: "2026-08-28T18:00:00Z",
+      requested_quantity_kg: 37,
+    };
+
+    // Razorcery-1: 35u @ ₹5.00
+    const offerCery1 = {
+      seller_id: "agent:seller:razorcery_1",
+      item: "flour",
+      quantity_kg: 35,
+      quality: "Grade A",
+      base_price_per_kg: 6,
+      discount_pct: 16.7,
+      discount_reason: "volume_tier",
+      final_price_per_kg: 5.0,
+      total_price: 175,
+      delivery_by: "2026-08-28T12:00:00Z",
+      offer_expires: "2026-08-28T18:00:00Z",
+      requested_quantity_kg: 37,
+    };
+
+    const decision = await buyerEvaluateOffer(offerPies, profile, [offerPies, offerCery1], 37);
+
+    assert.equal(decision.action, "propose_split_accept");
+    assert.ok(decision.split_payload);
+    assert.equal(decision.split_payload.total_quantity_kg, 37);
+    assert.equal(decision.split_payload.total_cost, 186.60); // 35 * 5.00 + 2 * 5.80
+    assert.equal(decision.split_payload.splits.length, 2);
+
+    // Cheaper seller Razorcery-1 takes 35u
+    assert.equal(decision.split_payload.splits[0].seller_id, "agent:seller:razorcery_1");
+    assert.equal(decision.split_payload.splits[0].quantity_kg, 35);
+    assert.equal(decision.split_payload.splits[0].total_price, 175.00);
+
+    // Pricier seller RazorPies takes remaining 2u
+    assert.equal(decision.split_payload.splits[1].seller_id, "agent:seller:razor_pies");
+    assert.equal(decision.split_payload.splits[1].quantity_kg, 2);
+    assert.equal(decision.split_payload.splits[1].total_price, 11.60);
+  });
+
+  test("22. Full Orchestrator end-to-end split negotiation procures 37u flour and logs SPLIT_ACCEPT", async () => {
+    // Configure live inventories to match bug report: RazorPies 25u, Razorcery-1 35u
+    InventoryStore.syncSellerInventories({
+      "agent:seller:razor_pies": { flour: 25 },
+      "agent:seller:razorcery_1": { flour: 35 },
+    });
+
+    const threadId = "test_split_procure_37u_" + Date.now();
+    const result = await runNegotiation({
+      threadId,
+      scenario: "custom",
+      itemToProcure: "flour",
+      quantityNeeded: 37,
+      customRfq: { target_price_per_unit: 5.0 },
+    });
+
+    assert.equal(result.status, "CONFIRMED");
+    assert.equal(result.total_amount, 186.60);
+
+    const thread = ThreadStore.getThread(threadId);
+    const splitMsg = thread.find((m) => m.type === "SPLIT_ACCEPT");
+    assert.ok(splitMsg, "SPLIT_ACCEPT envelope must be logged in audit trail");
+    assert.equal((splitMsg.payload as any).split_deal?.total_quantity_kg, 37);
+
+    // Verify purchased items recorded 35u from Razorcery-1 and 2u from RazorPies
+    assert.ok(result.purchased_items);
+    const cery1Item = result.purchased_items.find((p) => p.seller_id.includes("razorcery_1"));
+    const piesItem = result.purchased_items.find((p) => p.seller_id.includes("razor_pies"));
+    assert.ok(cery1Item);
+    assert.ok(piesItem);
+    assert.equal(cery1Item.quantity, 35);
+    assert.equal(piesItem.quantity, 2);
   });
 });

@@ -111,6 +111,7 @@ export interface SplitAcceptPayload {
   total_cost: number;
   splits: SplitAcceptItem[];
   rationale: string;
+  unmet_quantity_kg?: number;
 }
 
 export interface RfqPayload {

@@ -242,6 +242,7 @@ async function callGemini(
         offer_expires: expiresAt,
         rationale: calculatedRationale,
         upsell_item: upsell,
+        requested_quantity_kg: rfq.quantity_kg,
       };
     }
   }
@@ -471,6 +472,7 @@ export async function sellerRespondToRfq(
     offer_expires: expiresAt,
     rationale: calculatedRationale,
     upsell_item: upsell,
+    requested_quantity_kg: rfq.quantity_kg,
   };
 }
 

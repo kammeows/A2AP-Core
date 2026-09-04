@@ -20,6 +20,10 @@ import {
   defaultBuyerNegotiationPolicy,
 } from "./negotiationPolicy.js";
 import {
+  allocateSplitAccept,
+  AllocationLine,
+} from "./pricingEngine.js";
+import {
   ProcurementOption,
   LivePantryState,
   computeProcurementOptions,
@@ -319,9 +323,12 @@ export function evaluateOffersDeterministically(
 
   const ceiling = getBuyerCeiling(neededItem, profile.max_price_per_kg[neededItem]);
 
-  // Sort by lowest total price
-  const sortedOffers = [...validOffers].sort((a, b) => a.total_price - b.total_price);
-  const bestSingle = sortedOffers[0];
+  // Determine best single offer
+  // Prefer offers that can fully fulfill neededQuantity; if none, lowest unit price
+  const fullyFulfilling = validOffers.filter((o) => o.quantity_kg >= neededQuantity);
+  const bestSingle = fullyFulfilling.length > 0
+    ? [...fullyFulfilling].sort((a, b) => a.final_price_per_kg - b.final_price_per_kg || a.total_price - b.total_price)[0]
+    : [...validOffers].sort((a, b) => a.final_price_per_kg - b.final_price_per_kg || b.quantity_kg - a.quantity_kg)[0];
 
   // Check unit price ceiling violation on best single offer
   if (bestSingle.final_price_per_kg > ceiling) {
@@ -353,48 +360,43 @@ export function evaluateOffersDeterministically(
     };
   }
 
-  // Split-deal evaluation across multi-sellers if advantageous
+  // Split-deal evaluation across multi-sellers using allocateSplitAccept
   let bestSplit: SplitAcceptPayload | null = null;
-  if (validOffers.length >= 2 && neededQuantity > 3) {
-    const seller1 = validOffers[0];
-    const seller2 = validOffers[1];
-    const s1Stock = seller1.quantity_kg || 10;
-    const s2Stock = seller2.quantity_kg || 10;
+  if (validOffers.length >= 2) {
+    const { allocation, unmetQuantity } = allocateSplitAccept(neededQuantity, validOffers);
 
-    let splitQty1 = Math.min(s1Stock, Math.ceil(neededQuantity * 0.6));
-    let splitQty2 = neededQuantity - splitQty1;
-    if (splitQty2 > s2Stock) {
-      splitQty2 = s2Stock;
-      splitQty1 = Math.min(s1Stock, neededQuantity - splitQty2);
-    }
+    // If allocation spans across 2 or more sellers, evaluate whether multi-seller split is advantageous
+    if (allocation.length >= 2) {
+      const splitTotalCost = Number(allocation.reduce((sum, line) => sum + line.cost, 0).toFixed(2));
+      const splitTotalQty = allocation.reduce((sum, line) => sum + line.quantity, 0);
 
-    if (splitQty1 + splitQty2 === neededQuantity && splitQty1 > 0 && splitQty2 > 0) {
-      const cost1 = Number((seller1.final_price_per_kg * splitQty1).toFixed(2));
-      const cost2 = Number((seller2.final_price_per_kg * splitQty2).toFixed(2));
-      const splitTotal = Number((cost1 + cost2).toFixed(2));
+      // Check if split deal is required (no single seller had enough stock)
+      // OR if split deal saves cost compared to single vendor procurement
+      const singleCanFulfill = bestSingle.quantity_kg >= neededQuantity;
+      const singleCostForNeeded = Number((bestSingle.final_price_per_kg * neededQuantity).toFixed(2));
 
-      if (splitTotal < bestSingle.total_price) {
+      const isAdvantageous = !singleCanFulfill || splitTotalCost < singleCostForNeeded || splitTotalCost < bestSingle.total_price;
+
+      if (isAdvantageous) {
+        const splitLinesSummary = allocation.map((a) => `${a.quantity}u from ${a.sellerId}`).join(" + ");
+        const savingsText = singleCanFulfill
+          ? `, saving ₹${(singleCostForNeeded - splitTotalCost).toFixed(2)} over single-vendor procurement`
+          : `, overcoming single-vendor stock limits (max single stock was ${bestSingle.quantity_kg}u)`;
+        const shortfallText = unmetQuantity > 0 ? ` [Sourcing Shortfall: ${unmetQuantity}u unmet]` : "";
+
         bestSplit = {
           item: neededItem,
-          total_quantity_kg: neededQuantity,
-          total_cost: splitTotal,
-          splits: [
-            {
-              seller_id: seller1.seller_id || "agent:seller:razor_pies",
-              item: neededItem,
-              quantity_kg: splitQty1,
-              unit_price: seller1.final_price_per_kg,
-              total_price: cost1,
-            },
-            {
-              seller_id: seller2.seller_id || "agent:seller:razorcery_1",
-              item: neededItem,
-              quantity_kg: splitQty2,
-              unit_price: seller2.final_price_per_kg,
-              total_price: cost2,
-            },
-          ],
-          rationale: `Split order (${splitQty1}u from ${seller1.seller_id} + ${splitQty2}u from ${seller2.seller_id}) yields total ₹${splitTotal}, saving ₹${Number((bestSingle.total_price - splitTotal).toFixed(2))} over single-vendor procurement within verified seller stocks.`,
+          total_quantity_kg: splitTotalQty,
+          total_cost: splitTotalCost,
+          splits: allocation.map((line) => ({
+            seller_id: line.sellerId,
+            item: neededItem,
+            quantity_kg: line.quantity,
+            unit_price: line.unitPrice,
+            total_price: line.cost,
+          })),
+          unmet_quantity_kg: unmetQuantity > 0 ? unmetQuantity : undefined,
+          rationale: `Split order (${splitLinesSummary}) yields total ₹${splitTotalCost}${savingsText} within verified seller stocks${shortfallText}.`,
         };
       }
     }
@@ -433,8 +435,9 @@ export function evaluateOffersDeterministically(
   }
 
   let rationale = "";
+  const sortedOffers = [...validOffers].sort((a, b) => a.total_price - b.total_price);
   if (sortedOffers.length > 1) {
-    const nextBest = sortedOffers[1];
+    const nextBest = sortedOffers.find((o) => o.seller_id !== bestSingle.seller_id) || sortedOffers[1];
     const diff = (nextBest.total_price - bestSingle.total_price).toFixed(2);
     rationale = `Selected ${bestSingle.seller_id || "vendor"} among ${sortedOffers.length} competing supplier quotes: ${bestSingle.quantity_kg}u at ₹${bestSingle.final_price_per_kg}/unit (Total ₹${bestSingle.total_price}, ${bestSingle.discount_pct}% discount). Saves ₹${diff} over alternative quote from ${nextBest.seller_id} and clears our ₹${ceiling.toFixed(2)}/unit ceiling rule.`;
   } else {
@@ -568,12 +571,13 @@ export class BuyerCatalogService {
 export async function buyerEvaluateOffer(
   offer: OfferPayload,
   profile: RestaurantProfile,
-  allOffers?: OfferPayload[]
+  allOffers?: OfferPayload[],
+  requestedQuantity?: number
 ): Promise<BuyerDecision> {
   const offersToCompare = allOffers && allOffers.length > 0 ? allOffers : [offer];
   const agentCards = InventoryStore.getAgentCards();
   const neededItem = offer.item;
-  const neededQuantity = offer.quantity_kg;
+  const neededQuantity = requestedQuantity ?? offer.requested_quantity_kg ?? offer.quantity_kg;
 
   if (process.env.NODE_ENV !== "test") {
     const geminiKeys = getGeminiKeys();
@@ -758,6 +762,8 @@ export class BuyerAgent {
   static validateReasoningNumbers = validateReasoningNumbers;
   static DeferredDecisions = DeferredDecisionStore;
   static checkDeferredDecisions = checkDeferredDecisions;
+  static allocateSplitAccept = allocateSplitAccept;
 }
 
+export { allocateSplitAccept, AllocationLine };
 export default BuyerAgent;

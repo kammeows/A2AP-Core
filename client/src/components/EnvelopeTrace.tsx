@@ -685,6 +685,11 @@ export const EnvelopeTrace: React.FC<EnvelopeTraceProps> = ({
                       <div style={{ marginTop: "0.35rem", fontSize: "0.76rem", fontWeight: 800, color: "#0f766e" }}>
                         Total Split Value: ₹{envelope.payload.total_cost}
                       </div>
+                      {Boolean(envelope.payload.split_deal?.unmet_quantity_kg) && (
+                        <div style={{ marginTop: "0.35rem", fontSize: "0.74rem", fontWeight: 700, color: "#dc2626" }}>
+                          ⚠️ Sourcing Shortfall: {envelope.payload.split_deal.unmet_quantity_kg} units unmet (market inventory depleted)
+                        </div>
+                      )}
                     </div>
                   )}
 
