@@ -1,10 +1,10 @@
-import Database from "better-sqlite3";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { AgentCard, InventoryItem } from "../types/domain.js";
 import { SellerItemState, DiscountTier, computeSellerOffer } from "../agents/pricingEngine.js";
 import { normalizeIngredientKey } from "../agents/negotiationPolicy.js";
+import { db } from "../db/connection.js";
 
 // Hard Floor Prices for Seller Agents (Never breached under any negotiation concession)
 export const sellerFloorPrices: Record<string, Record<string, number>> = {
@@ -168,40 +168,8 @@ export const defaultInventory = {
   ],
 };
 
-// Database Connection
-let dbDir: string;
-try {
-  const __filename = fileURLToPath(import.meta.url);
-  const __dirname = path.dirname(__filename);
-  dbDir = path.resolve(__dirname, "../../data");
-} catch {
-  dbDir = path.resolve(process.cwd(), "data");
-}
-
-if (!fs.existsSync(dbDir)) {
-  fs.mkdirSync(dbDir, { recursive: true });
-}
-
-const dbPath = process.env.DB_PATH || path.join(dbDir, "a2a.db");
-export const db = new Database(dbPath, { timeout: 10000 });
-
-// Schema setup
-db.exec(`
-  CREATE TABLE IF NOT EXISTS agent_cards (
-    agent_id TEXT PRIMARY KEY,
-    data TEXT NOT NULL
-  );
-
-  CREATE TABLE IF NOT EXISTS buyer_inventory (
-    agent_id TEXT PRIMARY KEY,
-    data TEXT NOT NULL
-  );
-
-  CREATE TABLE IF NOT EXISTS inventory (
-    item TEXT PRIMARY KEY,
-    data TEXT NOT NULL
-  );
-`);
+// Database Connection re-exported from centralized connection.js
+export { db };
 
 /**
  * Retrieves all known seller Agent Cards.

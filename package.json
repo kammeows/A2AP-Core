@@ -7,12 +7,17 @@
     "server": "npm run dev --prefix server",
     "client": "npm run dev --prefix client",
     "seed": "npm run seed --prefix server",
-    "build": "npm run build --prefix client"
+    "build": "npm run build --prefix server && npm run build --prefix client",
+    "vercel-build": "npm run build"
   },
+  "workspaces": [
+    "client",
+    "server"
+  ],
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": "",
+  "description": "Autonomous Agent-to-Agent (A2A) Bounded Procurement with Production-Grade Razorpay Settlement",
   "devDependencies": {
     "concurrently": "^9.2.4"
   }

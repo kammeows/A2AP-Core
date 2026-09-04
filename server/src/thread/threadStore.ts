@@ -1,44 +1,7 @@
-import Database from "better-sqlite3";
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { Envelope } from "../types/messages.js";
+import { db } from "../db/connection.js";
 
-let dbDir: string;
-try {
-  const __filename = fileURLToPath(import.meta.url);
-  const __dirname = path.dirname(__filename);
-  dbDir = path.resolve(__dirname, "../../data");
-} catch {
-  dbDir = path.resolve(process.cwd(), "data");
-}
-
-if (!fs.existsSync(dbDir)) {
-  fs.mkdirSync(dbDir, { recursive: true });
-}
-
-const dbPath = process.env.DB_PATH || path.join(dbDir, "a2a.db");
-export const db = new Database(dbPath, { timeout: 10000 });
-
-try {
-  db.pragma("journal_mode = WAL");
-  db.pragma("busy_timeout = 10000");
-} catch {
-  // Pragma fallback
-}
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS messages (
-    message_id TEXT PRIMARY KEY,
-    thread_id TEXT NOT NULL,
-    timestamp TEXT NOT NULL,
-    from_agent TEXT NOT NULL,
-    to_agent TEXT NOT NULL,
-    type TEXT NOT NULL,
-    payload TEXT NOT NULL
-  );
-  CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id);
-`);
+export { db };
 
 export function appendMessage(envelope: Envelope): void {
   const stmt = db.prepare(`

@@ -1,11 +1,13 @@
 import { Router } from "express";
 import { runNegotiation, confirmPendingTransaction } from "../orchestrator/orchestrator.js";
+import { extractCredentials } from "../payments/credentials.js";
 
 const router = Router();
 
 // POST /api/negotiate - Trigger multi-agent procurement cycle
 router.post("/", async (req, res) => {
   try {
+    const creds = extractCredentials(req);
     const {
       scenario = "custom",
       simulationMode,
@@ -40,6 +42,8 @@ router.post("/", async (req, res) => {
       itemsToProcure: Array.isArray(itemsToProcure) ? itemsToProcure : undefined,
       sellerInventories: sellerInventories && typeof sellerInventories === "object" ? sellerInventories : undefined,
       buyerVpa,
+      credentials: creds,
+      geminiApiKey: creds.geminiApiKey,
     });
 
     res.status(200).json({
@@ -84,6 +88,7 @@ router.post("/", async (req, res) => {
 // POST /api/negotiate/confirm - Human confirmation in Partial Mode
 router.post("/confirm", async (req, res) => {
   try {
+    const creds = extractCredentials(req);
     const { threadId, offer, action = "approve", simulatePaymentFail = false } = req.body;
     if (!threadId || !offer) {
       return res.status(400).json({ success: false, error: "Missing threadId or offer in request body" });
@@ -94,6 +99,7 @@ router.post("/confirm", async (req, res) => {
       offer,
       action,
       simulatePaymentFail: Boolean(simulatePaymentFail),
+      credentials: creds,
     });
 
     res.status(200).json({

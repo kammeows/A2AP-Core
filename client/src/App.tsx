@@ -3,6 +3,8 @@ import { Header } from './components/Header';
 import { RazorSliceArchitecture } from './components/RazorSliceArchitecture';
 import { EnvelopeTrace } from './components/EnvelopeTrace';
 import { MobileDevice } from './components/MobileDevice';
+import { ApiKeyModal } from './components/ApiKeyModal';
+import { hasCustomRazorpayKeys } from './utils/keyStore';
 import {
   fetchInventory,
   fetchPolicy,
@@ -17,6 +19,10 @@ import {
 import { Envelope, NegotiationResult, OfferPayload, SimulationMode } from './types';
 
 export const App: React.FC = () => {
+  // BYOK Key Modal State
+  const [isKeyModalOpen, setIsKeyModalOpen] = useState<boolean>(false);
+  const [hasCustomKeys, setHasCustomKeys] = useState<boolean>(hasCustomRazorpayKeys());
+
   // Stock States
   const [buyerStockKg, setBuyerStockKg] = useState<number>(15);
   const [buyerTargetStockKg, setBuyerTargetStockKg] = useState<number>(65);
@@ -74,6 +80,15 @@ export const App: React.FC = () => {
   useEffect(() => {
     loadInitialData();
   }, [loadInitialData]);
+
+  // Reactive listener for local BYOK changes
+  useEffect(() => {
+    const handleKeysUpdated = () => {
+      setHasCustomKeys(hasCustomRazorpayKeys());
+    };
+    window.addEventListener('a2a_keys_updated', handleKeysUpdated);
+    return () => window.removeEventListener('a2a_keys_updated', handleKeysUpdated);
+  }, []);
 
   // Mode Change Handler
   const handleModeChange = async (newMode: 'full' | 'partial') => {
@@ -347,6 +362,8 @@ export const App: React.FC = () => {
         onReset={handleReset}
         isResetting={isResetting}
         delegationMode={delegationMode}
+        onOpenKeyModal={() => setIsKeyModalOpen(true)}
+        hasCustomKeys={hasCustomKeys}
       />
 
       {/* Main Content Layout */}
@@ -403,6 +420,13 @@ export const App: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* BYOK (Bring Your Own Keys) Settings Modal */}
+      <ApiKeyModal
+        isOpen={isKeyModalOpen}
+        onClose={() => setIsKeyModalOpen(false)}
+        onKeysChanged={() => setHasCustomKeys(hasCustomRazorpayKeys())}
+      />
     </div>
   );
 };

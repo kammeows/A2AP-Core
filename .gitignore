@@ -15,9 +15,13 @@ node_modules/
 # 3. Local SQLite database files & test databases (Created dynamically by seed scripts)
 *.db
 *.db-journal
+*.db-shm
+*.db-wal
 *.sqlite
 server/data/*.db
 server/data/*.sqlite
+server/data/*.db-shm
+server/data/*.db-wal
 
 # 4. Production build outputs and temporary caches
 dist/

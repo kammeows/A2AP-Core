@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { IdempotencyManager } from "./idempotencyManager.js";
 import { WebhookStore } from "./webhookStore.js";
+import { RazorpayCredentials } from "./credentials.js";
 
 try {
   const __filename = fileURLToPath(import.meta.url);
@@ -27,16 +28,66 @@ const hasValidKeys = Boolean(
   !keyId.includes("YOUR_"),
 );
 
-let razorpayInstance: Razorpay | null = null;
+let defaultRazorpayInstance: Razorpay | null = null;
 if (hasValidKeys) {
   try {
-    razorpayInstance = new Razorpay({
+    defaultRazorpayInstance = new Razorpay({
       key_id: keyId!,
       key_secret: keySecret,
     });
   } catch (err) {
     console.warn("Failed to initialize Razorpay instance:", err);
   }
+}
+
+/**
+ * Returns either a custom BYOK Razorpay client or the server default.
+ */
+export function getRazorpayInstance(credentials?: RazorpayCredentials): {
+  instance: Razorpay | null;
+  keyId?: string;
+  keySecret: string;
+  webhookSecret?: string;
+  hasValidKeys: boolean;
+  isCustom: boolean;
+} {
+  const customKeyId = credentials?.keyId?.trim();
+  const customKeySecret = credentials?.keySecret?.trim();
+  const customWebhookSecret = credentials?.webhookSecret?.trim();
+
+  if (customKeyId && customKeySecret) {
+    const isValid =
+      customKeyId.length > 5 &&
+      customKeySecret.length > 5 &&
+      !customKeyId.includes("YOUR_");
+    if (isValid) {
+      try {
+        const customInstance = new Razorpay({
+          key_id: customKeyId,
+          key_secret: customKeySecret,
+        });
+        return {
+          instance: customInstance,
+          keyId: customKeyId,
+          keySecret: customKeySecret,
+          webhookSecret: customWebhookSecret,
+          hasValidKeys: true,
+          isCustom: true,
+        };
+      } catch (err) {
+        console.warn("Failed to initialize custom Razorpay client:", err);
+      }
+    }
+  }
+
+  return {
+    instance: defaultRazorpayInstance,
+    keyId: keyId || undefined,
+    keySecret,
+    webhookSecret: process.env.RAZORPAY_WEBHOOK_SECRET?.trim() || undefined,
+    hasValidKeys,
+    isCustom: false,
+  };
 }
 
 export interface RazorpayOrderResult {
@@ -93,6 +144,7 @@ export interface SettlePaymentParams {
   idempotencyKey?: string;
   attemptNumber?: number;
   method?: "upi_circle" | "upi" | "card" | "netbanking";
+  credentials?: RazorpayCredentials;
 }
 
 export function sanitizeReceipt(receipt?: string): string {
@@ -118,8 +170,10 @@ export async function createOrder(
   currency: string = "INR",
   receipt: string = `rcpt_${Date.now()}`,
   idempotencyKey?: string,
+  credentials?: RazorpayCredentials,
 ): Promise<RazorpayOrderResult> {
   const sanitizedReceipt = sanitizeReceipt(receipt);
+  const clientContext = getRazorpayInstance(credentials);
 
   console.log("\n================ [RAZORPAY API: CREATE ORDER] ================");
   console.log(`[RAZORPAY API] Amount: ${amountInPaise} paise (₹${(amountInPaise / 100).toFixed(2)})`);
@@ -128,9 +182,15 @@ export async function createOrder(
   if (idempotencyKey) {
     console.log(`[RAZORPAY API] Header: x-razorpay-idempotency-key: ${idempotencyKey}`);
   }
-  console.log(`[RAZORPAY API] Live API Keys Configured: ${hasValidKeys ? `YES (${keyId?.slice(0, 8)}...)` : "NO (Mock fallback active)"}`);
+  console.log(
+    `[RAZORPAY API] Live API Keys Configured: ${
+      clientContext.hasValidKeys
+        ? `YES (${clientContext.keyId?.slice(0, 8)}... [${clientContext.isCustom ? "BYOK Custom Key" : "Server Default"}])`
+        : "NO (Mock fallback active)"
+    }`
+  );
 
-  if (razorpayInstance && hasValidKeys) {
+  if (clientContext.instance && clientContext.hasValidKeys) {
     try {
       const orderPayload: any = {
         amount: Math.round(amountInPaise),
@@ -147,7 +207,7 @@ export async function createOrder(
 
       console.log("[RAZORPAY API] Request payload sent to https://api.razorpay.com/v1/orders:\n", JSON.stringify(orderPayload, null, 2));
 
-      const order = await razorpayInstance.orders.create(orderPayload);
+      const order = await clientContext.instance.orders.create(orderPayload);
 
       console.log("[RAZORPAY API] >>> SUCCESS response from Razorpay Orders API:\n", JSON.stringify(order, null, 2));
       console.log("==============================================================\n");
@@ -284,7 +344,10 @@ export async function settlePayment(
     idempotencyKey,
     attemptNumber = 1,
     method = "upi_circle",
+    credentials,
   } = params;
+
+  const clientContext = getRazorpayInstance(credentials);
 
   // Compute effective idempotency key
   const effectiveIdempKey =
@@ -501,12 +564,15 @@ export async function settlePayment(
   // HAPPY PATH: SUCCESSFUL CAPTURE & HMAC VERIFICATION (success@razorpay)
   // =========================================================================
   const paymentId = `pay_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 8)}`;
-  const signature = generatePaymentSignature(order.id, paymentId);
-  const signatureVerified = verifyPaymentSignature({
-    orderId: order.id,
-    paymentId,
-    signature,
-  });
+  const signature = generatePaymentSignature(order.id, paymentId, clientContext.keySecret);
+  const signatureVerified = verifyPaymentSignature(
+    {
+      orderId: order.id,
+      paymentId,
+      signature,
+    },
+    clientContext.keySecret
+  );
 
   if (!signatureVerified) {
     IdempotencyManager.resolveAttempt(effectiveIdempKey, "FAILED", null, {
@@ -539,10 +605,10 @@ export async function settlePayment(
 
   // Reconcile and display post-capture order state (Critique 1 Fix: status=paid, amount_paid=amount, amount_due=0, attempts=1)
   let postCaptureOrder: any;
-  if (razorpayInstance && hasValidKeys && !order.is_mock) {
+  if (clientContext.instance && clientContext.hasValidKeys && !order.is_mock) {
     try {
       console.log(`[RAZORPAY API] Fetching post-capture order state for ${order.id} from https://api.razorpay.com/v1/orders/${order.id}...`);
-      const liveOrder = await razorpayInstance.orders.fetch(order.id);
+      const liveOrder = await clientContext.instance.orders.fetch(order.id);
       postCaptureOrder = {
         ...liveOrder,
         status: "paid",
@@ -643,6 +709,7 @@ export const razorpayClient = {
   generatePaymentSignature,
   verifyPaymentSignature,
   verifyWebhookSignature,
+  getRazorpayInstance,
 };
 
 export default razorpayClient;

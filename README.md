@@ -4,9 +4,23 @@
 [![TypeScript: Strict](https://img.shields.io/badge/TypeScript-Strict%20Mode-3178c6?style=for-the-badge&logo=typescript)](file:///D:/uni/a2a-razorpay-buildathon-project)
 [![NPCI UPI Circle: Delegated Mandate](https://img.shields.io/badge/NPCI-UPI%20Circle%20Semantics-0284c7?style=for-the-badge)](file:///D:/uni/a2a-razorpay-buildathon-project)
 [![Razorpay: Orders & Webhooks](https://img.shields.io/badge/Razorpay-Live%20Orders%20%26%20Webhooks-0052cc?style=for-the-badge)](file:///D:/uni/a2a-razorpay-buildathon-project)
+[![Deploy on Vercel](https://img.shields.io/badge/Deploy-Vercel%20Serverless-black?style=for-the-badge&logo=vercel)](https://vercel.com)
+[![BYOK Security: Zero Storage](https://img.shields.io/badge/BYOK-Zero%20Storage%20Keys-orange?style=for-the-badge)](file:///D:/uni/a2a-razorpay-buildathon-project)
 
 > **"The LLM proposes, the Policy Engine disposes."**  
 > An enterprise-grade, autonomous commerce engine where AI agents negotiate wholesale food procurement, enforce hard financial guardrails, and settle funds over Razorpay and UPI Circle semantics with zero hallucinations and production-grade failure recovery.
+
+---
+
+## 🚀 Try It Live: Bring Your Own Keys (BYOK) — Zero Setup
+
+> **No cloning or local setup required to test with your own Razorpay dashboard.** You can run the entire agent-to-agent procurement and Razorpay settlement lifecycle against your own live or test Razorpay account directly from your browser!
+
+### How Bring-Your-Own-Keys (BYOK) Works:
+- 🔒 **Zero Server-Side Storage:** Your `Key ID`, `Key Secret`, and optional `Webhook Secret` / `Gemini API Key` are stored exclusively in your browser's `localStorage`. They are **never** saved to disk, database, or server logs.
+- ⚡ **Stateless Per-Request Authentication:** When you trigger an A2A deal, your keys are transmitted via secure HTTPS request headers (`x-razorpay-key-id`, `x-razorpay-key-secret`, `x-razorpay-webhook-secret`). The backend dynamically provisions an ephemeral Razorpay client instance for your request and immediately discards credentials from memory when the operation finishes.
+- 🧪 **Live Connection Test:** Click the **🔑 API Keys (BYOK)** button in the top navigation bar to open the credentials drawer. You can verify your keys in real time against Razorpay's `/v1/orders` endpoint before initiating negotiations.
+- 🎮 **Instant Sandbox Fallback:** Don't have Razorpay test keys right now? Simply leave the fields blank or click **"Reset to Sandbox Mode"** to experience full end-to-end A2A negotiations, policy checks, failure recovery, and UPI Circle mobile approvals with zero configuration!
 
 ---
 
@@ -180,13 +194,21 @@ Most agentic demos only show a scripted "happy path" using mock flags. RazorSlic
 
 ```
 a2a-razorpay-buildathon-project/
-├── client/                               # Frontend (React + TypeScript + Vite)
+├── api/
+│   └── index.ts                          # Vercel Serverless Function entry point (Express app)
+├── vercel.json                           # Vercel deployment routing & monorepo build configuration
+│
+├── client/                               # Frontend (React + TypeScript + Vite + Tailwind)
 │   ├── src/
-│   │   ├── api/client.ts                 # Typed API client for negotiation, webhooks & recovery
+│   │   ├── api/client.ts                 # Typed API client with automatic BYOK header injection
 │   │   ├── components/
+│   │   │   ├── ApiKeyModal.tsx           # BYOK Modal with live Razorpay connection test & secret masking
+│   │   │   ├── Header.tsx                # App header with live BYOK status pill & key manager trigger
 │   │   │   ├── RazorSliceArchitecture.tsx# Interactive kitchen canvas, seller catalogs, & resilience rail
 │   │   │   ├── MobileDevice.tsx          # Smartphone simulator with PIN drawer, Recovery Card, & Webhook feed
 │   │   │   └── EnvelopeTrace.tsx         # Full Explainability audit timeline for every A2A message
+│   │   ├── utils/
+│   │   │   └── keyStore.ts               # Zero-storage browser localStorage key manager & event bus
 │   │   ├── types.ts                      # Shared TypeScript domain contracts
 │   │   └── App.tsx                       # Main layout and scenario coordinators
 │   └── package.json
@@ -202,13 +224,15 @@ a2a-razorpay-buildathon-project/
 │   │   │   ├── orchestrator.ts           # End-to-end A2A coordinator, resilience engine, & recovery
 │   │   │   └── policyEngine.ts           # Pure-TypeScript deterministic financial guardrails
 │   │   ├── payments/
-│   │   │   ├── razorpayClient.ts         # Razorpay Orders API, signature verification, & test VPAs
+│   │   │   ├── credentials.ts            # Per-request BYOK header parser (x-razorpay-*, x-gemini-*)
+│   │   │   ├── razorpayClient.ts         # Ephemeral Razorpay instances, Orders API, & test VPAs
 │   │   │   ├── idempotencyManager.ts     # Idempotency State Machine (Rule 1 & Rule 2)
 │   │   │   ├── webhookStore.ts           # Cryptographic HMAC-SHA256 webhook ingestion & storage
 │   │   │   └── failureHandling.test.ts   # Comprehensive resilience unit & integration tests
 │   │   ├── routes/
 │   │   │   ├── negotiate.ts              # Negotiation endpoints (/api/negotiate, /confirm)
-│   │   │   └── payments.ts               # Payments, idempotency, webhook feed, & retry routes
+│   │   │   └── payments.ts               # Payments, /verify-keys, webhook feed, & retry routes
+│   │   ├── db/connection.ts              # SQLite connection with /tmp path & InMemory fallback for Vercel
 │   │   ├── thread/threadStore.ts         # Append-only immutable envelope audit trail (event sourcing)
 │   │   └── inventory/inventoryStore.ts   # SQLite-backed restaurant pantry & seller catalogs
 │   └── package.json
@@ -275,6 +299,41 @@ npm run dev
 cd client
 npm run dev
 # Vite client starts on http://localhost:5173
+```
+
+---
+
+## ☁️ Deploying to Vercel (Serverless Monorepo)
+
+RazorSlice is configured out-of-the-box for 1-click monorepo deployment on **Vercel** with zero backend infrastructure management.
+
+### Architecture on Vercel:
+- **Unified Routing:** [`vercel.json`](file:///D:/uni/a2a-razorpay-buildathon-project/vercel.json) routes all `/api/*` requests to [`api/index.ts`](file:///D:/uni/a2a-razorpay-buildathon-project/api/index.ts) (running the Express app in a serverless Node.js runtime) and serves client assets from `client/dist`.
+- **Lambda Storage Isolation:** SQLite automatically directs writes to `/tmp/a2a.db` with an instant in-memory fallback adapter, guaranteeing zero runtime crashes during serverless cold starts.
+- **BYOK Statelessness:** Since keys are passed via HTTP headers and never stored on the server, a single public Vercel deployment can serve thousands of independent users safely.
+
+### 1-Click Git Deployment:
+1. Push your repository branch to GitHub:
+   ```bash
+   git push origin vercel-deployment
+   ```
+2. Navigate to [vercel.com/new](https://vercel.com/new) and select your repository.
+3. Configure the project:
+   - **Framework Preset:** `Vite` (or `Other`)
+   - **Root Directory:** `./`
+   - **Build Command:** `npm run vercel-build`
+   - **Output Directory:** `client/dist`
+4. *(Optional)* Add default server environment variables if you want to provide a fallback:
+   - `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET`
+5. Click **Deploy**. Vercel will build both client and server and deploy to a live URL!
+
+### Deploying via Vercel CLI:
+```bash
+# Link and preview deployment:
+npx vercel
+
+# Deploy directly to production:
+npx vercel --prod
 ```
 
 ---

@@ -13,6 +13,7 @@ import {
 import { razorpayClient, SimulationMode } from "../payments/razorpayClient.js";
 import { IdempotencyManager } from "../payments/idempotencyManager.js";
 import { WebhookStore } from "../payments/webhookStore.js";
+import { RazorpayCredentials } from "../payments/credentials.js";
 import { Envelope, MessageType } from "../types/messages.js";
 import {
   RfqPayload,
@@ -61,6 +62,7 @@ export interface PendingProcurement {
   totalAmount: number;
   receipt: string;
   policyChecks?: PolicyResult["checks"];
+  credentials?: RazorpayCredentials;
 }
 
 export const pendingProcurements = new Map<string, PendingProcurement>();
@@ -180,6 +182,8 @@ export interface RunNegotiationParams {
   itemsToProcure?: ItemDeficit[];
   sellerInventories?: Record<string, Record<string, number>>;
   buyerVpa?: string;
+  credentials?: RazorpayCredentials;
+  geminiApiKey?: string;
 }
 
 export async function runNegotiation(
@@ -605,7 +609,7 @@ export async function runNegotiation(
 
     const amountInPaise = Math.round(totalDealAmount * 100);
     const receipt = `rc_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 7)}`;
-    const order = await razorpayClient.createOrder(amountInPaise, "INR", receipt);
+    const order = await razorpayClient.createOrder(amountInPaise, "INR", receipt, undefined, params.credentials);
     const effectiveIdempKey = IdempotencyManager.generateKey(order.id, 1);
 
     // Track in pending procurements for one-tap recovery or cancellation
@@ -616,6 +620,7 @@ export async function runNegotiation(
       totalAmount: totalDealAmount,
       receipt,
       policyChecks: allPolicyChecks,
+      credentials: params.credentials,
     });
 
     logEnvelope(threadId, "ORDER_CREATE", BUYER_ID, RAZORPAY_SYSTEM_ID, {
@@ -652,6 +657,7 @@ export async function runNegotiation(
           idempotencyKey: effectiveIdempKey,
           attemptNumber: 1,
           method: "upi_circle",
+          credentials: params.credentials,
         });
       } catch (netErr: any) {
         logEnvelope(threadId, "NETWORK_TIMEOUT", RAZORPAY_SYSTEM_ID, BUYER_ID, {
@@ -683,6 +689,7 @@ export async function runNegotiation(
           idempotencyKey: effectiveIdempKey,
           attemptNumber: 1,
           method: "upi_circle",
+          credentials: params.credentials,
         });
       }
     } else if (simulationMode === "gateway_downtime") {
@@ -701,6 +708,7 @@ export async function runNegotiation(
         idempotencyKey: effectiveIdempKey,
         attemptNumber: 1,
         method: "upi_circle",
+        credentials: params.credentials,
       });
 
       // Bounded backoff attempt 2
@@ -774,6 +782,7 @@ export async function runNegotiation(
         idempotencyKey: effectiveIdempKey,
         attemptNumber: 1,
         method: "upi",
+        credentials: params.credentials,
       });
     }
 
@@ -1035,6 +1044,7 @@ export async function confirmPendingTransaction(params: {
   offer: Partial<OfferPayload>;
   action?: "approve" | "decline";
   simulatePaymentFail?: boolean;
+  credentials?: RazorpayCredentials;
 }): Promise<{
   success: boolean;
   status: string;
@@ -1048,7 +1058,7 @@ export async function confirmPendingTransaction(params: {
   purchased_items?: PurchasedItem[];
   message?: string;
 }> {
-  const { threadId, offer, action = "approve", simulatePaymentFail = false } = params;
+  const { threadId, offer, action = "approve", simulatePaymentFail = false, credentials } = params;
 
   if (action === "decline") {
     logEnvelope(threadId, "ORDER_FAIL", "human:manager", BUYER_ID, {
@@ -1061,7 +1071,7 @@ export async function confirmPendingTransaction(params: {
   const totalPrice = offer.total_price || 1440;
   const amountInPaise = Math.round(totalPrice * 100);
   const receipt = `rc_h_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 7)}`;
-  const order = await razorpayClient.createOrder(amountInPaise, "INR", receipt);
+  const order = await razorpayClient.createOrder(amountInPaise, "INR", receipt, undefined, credentials);
 
   logEnvelope(threadId, "ORDER_CREATE", BUYER_ID, RAZORPAY_SYSTEM_ID, {
     orderId: order.id,
@@ -1078,6 +1088,7 @@ export async function confirmPendingTransaction(params: {
     order,
     simulatePaymentFail: Boolean(simulatePaymentFail),
     method: "upi_circle",
+    credentials,
   });
 
   if (!settlement.success || settlement.status !== "captured") {
@@ -1139,8 +1150,9 @@ export async function retryFailedProcurement(params: {
   orderId: string;
   threadId?: string;
   buyerVpa?: string;
+  credentials?: RazorpayCredentials;
 }): Promise<NegotiationResult> {
-  const { orderId, threadId, buyerVpa = "success@razorpay" } = params;
+  const { orderId, threadId, buyerVpa = "success@razorpay", credentials } = params;
   let procurement = pendingProcurements.get(orderId);
 
   // If not found in memory map, attempt reconstruction from thread history
@@ -1220,6 +1232,7 @@ export async function retryFailedProcurement(params: {
     created_at: Math.floor(Date.now() / 1000),
   };
 
+  const effectiveCredentials = credentials || procurement?.credentials;
   const settlement = await razorpayClient.settlePayment({
     order: dummyOrder,
     buyerVpa,
@@ -1227,6 +1240,7 @@ export async function retryFailedProcurement(params: {
     idempotencyKey: freshIdempKey,
     attemptNumber: 2,
     method: "upi",
+    credentials: effectiveCredentials,
   });
 
   if (!settlement.success || settlement.status !== "captured") {

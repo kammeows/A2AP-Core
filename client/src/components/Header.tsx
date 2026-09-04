@@ -5,18 +5,23 @@ import {
   RefreshCw,
   Layers,
   CheckCircle2,
+  Key,
 } from "lucide-react";
 
 interface HeaderProps {
   onReset: () => void;
   isResetting: boolean;
   delegationMode: "full" | "partial";
+  onOpenKeyModal: () => void;
+  hasCustomKeys: boolean;
 }
 
 export const Header: React.FC<HeaderProps> = ({
   onReset,
   isResetting,
   delegationMode,
+  onOpenKeyModal,
+  hasCustomKeys,
 }) => {
   return (
     <header className="app-banner">
@@ -77,6 +82,32 @@ export const Header: React.FC<HeaderProps> = ({
               : "Partial (Human-Gated)"}
           </span>
         </div>
+
+        <button
+          onClick={onOpenKeyModal}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "0.4rem",
+            padding: "0.38rem 0.8rem",
+            borderRadius: 6,
+            background: hasCustomKeys
+              ? "linear-gradient(135deg, rgba(16, 185, 129, 0.25) 0%, rgba(5, 150, 105, 0.25) 100%)"
+              : "rgba(255, 255, 255, 0.08)",
+            border: `1px solid ${
+              hasCustomKeys ? "rgba(16, 185, 129, 0.5)" : "rgba(255, 255, 255, 0.15)"
+            }`,
+            color: hasCustomKeys ? "#a7f3d0" : "#e5e7eb",
+            fontSize: "0.76rem",
+            fontWeight: 700,
+            cursor: "pointer",
+            transition: "all 0.15s ease",
+          }}
+          title="Configure Razorpay & Gemini API Keys (BYOK)"
+        >
+          <Key size={13} color={hasCustomKeys ? "#34d399" : "#9ca3af"} />
+          <span>{hasCustomKeys ? "Custom Keys Active" : "API Keys (BYOK)"}</span>
+        </button>
 
         <button
           onClick={onReset}

@@ -3,8 +3,60 @@ import { razorpayClient } from "../payments/razorpayClient.js";
 import { WebhookStore } from "../payments/webhookStore.js";
 import { IdempotencyManager } from "../payments/idempotencyManager.js";
 import { Orchestrator } from "../orchestrator/orchestrator.js";
+import { extractCredentials } from "../payments/credentials.js";
 
 const router = Router();
+
+// GET /api/payments/config - Returns key configuration status (sanitized, zero secrets exposed)
+router.get("/config", (_req, res) => {
+  const { hasValidKeys, keyId } = razorpayClient.getRazorpayInstance();
+  res.status(200).json({
+    success: true,
+    hasServerKeys: hasValidKeys,
+    serverKeyPrefix: keyId ? `${keyId.substring(0, 8)}...` : null,
+    sandboxMode: !hasValidKeys,
+  });
+});
+
+// POST /api/payments/verify-keys - Authenticates BYOK keys against live Razorpay Orders API
+router.post("/verify-keys", async (req, res) => {
+  try {
+    const creds = extractCredentials(req);
+    const clientContext = razorpayClient.getRazorpayInstance(creds);
+
+    if (!clientContext.hasValidKeys || !clientContext.instance) {
+      return res.status(400).json({
+        success: false,
+        valid: false,
+        error: "Both Razorpay Key ID (rzp_...) and Secret must be provided (length > 5 characters, not placeholder)",
+      });
+    }
+
+    // Ping Razorpay Orders API with count: 1 to verify credentials
+    await clientContext.instance.orders.all({ count: 1 });
+
+    const isLive = clientContext.keyId?.startsWith("rzp_live");
+    res.status(200).json({
+      success: true,
+      valid: true,
+      isCustom: clientContext.isCustom,
+      mode: isLive ? "live" : "test",
+      keyIdPrefix: clientContext.keyId ? `${clientContext.keyId.substring(0, 8)}...` : "",
+      message: `Authentication successful with Razorpay ${isLive ? "LIVE" : "TEST"} API!`,
+    });
+  } catch (err: any) {
+    console.warn("BYOK Key verification failed:", err?.error?.description || err.message);
+    const errorDescription =
+      err?.error?.description ||
+      err.message ||
+      "Authentication failed. Please verify your Razorpay Key ID and Key Secret.";
+    res.status(401).json({
+      success: false,
+      valid: false,
+      error: errorDescription,
+    });
+  }
+});
 
 // POST /api/payments/verify - Verify Razorpay payment signature
 router.post("/verify", (req, res) => {
@@ -17,11 +69,17 @@ router.post("/verify", (req, res) => {
       });
     }
 
-    const isValid = razorpayClient.verifyPaymentSignature({
-      orderId,
-      paymentId,
-      signature,
-    });
+    const creds = extractCredentials(req);
+    const clientContext = razorpayClient.getRazorpayInstance(creds);
+
+    const isValid = razorpayClient.verifyPaymentSignature(
+      {
+        orderId,
+        paymentId,
+        signature,
+      },
+      clientContext.keySecret
+    );
 
     res.status(200).json({
       success: true,
@@ -41,9 +99,12 @@ router.post("/verify", (req, res) => {
 router.post("/webhook", (req, res) => {
   try {
     const signature = (req.headers["x-razorpay-signature"] as string) || "";
+    const creds = extractCredentials(req);
+    const clientContext = razorpayClient.getRazorpayInstance(creds);
     const webhookSecret =
+      creds.webhookSecret ||
       process.env.RAZORPAY_WEBHOOK_SECRET ||
-      process.env.RAZORPAY_KEY_SECRET ||
+      clientContext.keySecret ||
       "test_secret_razorpay_a2a_salt";
 
     const { record, verified } = WebhookStore.ingestWebhook(
@@ -116,10 +177,12 @@ router.post("/retry", async (req, res) => {
       });
     }
 
+    const creds = extractCredentials(req);
     const result = await Orchestrator.retryFailedProcurement({
       orderId,
       threadId,
       buyerVpa,
+      credentials: creds,
     });
 
     res.status(200).json({

@@ -36,14 +36,18 @@ try {
   console.error("Initial seed check failed:", e);
 }
 
-export const server = app.listen(PORT, () => {
-  console.log(`=======================================================`);
-  console.log(`  A2A Bounded Procurement Agent Server Running        `);
-  console.log(`  Port: http://localhost:${PORT}                      `);
-  console.log(`  Health: http://localhost:${PORT}/api/health         `);
-  console.log(`  Policy: http://localhost:${PORT}/api/policy         `);
-  console.log(`  Audit Threads: http://localhost:${PORT}/api/threads `);
-  console.log(`=======================================================`);
-});
+export let server: any = null;
+if (!process.env.VERCEL && process.env.NODE_ENV !== "test") {
+  server = app.listen(PORT, () => {
+    console.log(`=======================================================`);
+    console.log(`  A2A Bounded Procurement Agent Server Running        `);
+    console.log(`  Port: http://localhost:${PORT}                      `);
+    console.log(`  Health: http://localhost:${PORT}/api/health         `);
+    console.log(`  Policy: http://localhost:${PORT}/api/policy         `);
+    console.log(`  Audit Threads: http://localhost:${PORT}/api/threads `);
+    console.log(`=======================================================`);
+  });
+}
 
+export { app };
 export default app;
