@@ -25,13 +25,15 @@ export function evaluateDeal(
   const checks: PolicyCheck[] = [];
 
   // Check 1: Seller Allowlist
+  const allowlist = Array.isArray(policy.seller_allowlist) ? policy.seller_allowlist : [];
   checks.push({
     rule: "seller_allowlisted",
-    passed: policy.seller_allowlist.includes(sellerId),
+    passed: allowlist.includes(sellerId),
   });
 
   // Check 2: Unit Price Ceiling
-  const ceiling = policy.per_unit_price_ceiling[offer.item];
+  const ceilingMap = policy.per_unit_price_ceiling || {};
+  const ceiling = ceilingMap[offer.item];
   checks.push({
     rule: "unit_price_within_ceiling",
     passed: ceiling === undefined || offer.final_price_per_kg <= ceiling,

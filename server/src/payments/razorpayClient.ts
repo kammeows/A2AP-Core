@@ -72,6 +72,19 @@ export interface SettlePaymentParams {
   method?: "upi_circle" | "upi" | "card" | "netbanking";
 }
 
+export function sanitizeReceipt(receipt?: string): string {
+  if (!receipt) {
+    return `rcpt_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 6)}`;
+  }
+  // Razorpay constraint: receipt length cannot exceed 40 characters
+  if (receipt.length > 40) {
+    const hash = crypto.createHash("md5").update(receipt).digest("hex").slice(0, 8);
+    const cleanPrefix = receipt.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 31);
+    return `${cleanPrefix}_${hash}`.slice(0, 40);
+  }
+  return receipt;
+}
+
 /**
  * Creates a Razorpay Order entity via Orders API.
  * In production Razorpay, this generates an order with status 'created'.
@@ -82,30 +95,50 @@ export async function createOrder(
   currency: string = "INR",
   receipt: string = `rcpt_${Date.now()}`,
 ): Promise<RazorpayOrderResult> {
+  const sanitizedReceipt = sanitizeReceipt(receipt);
+
+  console.log("\n================ [RAZORPAY API: CREATE ORDER] ================");
+  console.log(`[RAZORPAY API] Amount: ${amountInPaise} paise (₹${(amountInPaise / 100).toFixed(2)})`);
+  console.log(`[RAZORPAY API] Currency: ${currency}`);
+  console.log(`[RAZORPAY API] Receipt: ${sanitizedReceipt} (length: ${sanitizedReceipt.length}/40)`);
+  console.log(`[RAZORPAY API] Live API Keys Configured: ${hasValidKeys ? `YES (${keyId?.slice(0, 8)}...)` : "NO (Mock fallback active)"}`);
+
   if (razorpayInstance && hasValidKeys) {
     try {
-      const order = await razorpayInstance.orders.create({
+      const orderPayload = {
         amount: Math.round(amountInPaise),
         currency,
-        receipt,
+        receipt: sanitizedReceipt,
         notes: {
           system: "A2A_Bounded_Procurement_Agent",
           agent: "agent:buyer:razorslice",
           protocol: "UPI_Circle_Delegated_Mandate",
         },
-      });
+      };
+
+      console.log("[RAZORPAY API] Request payload sent to https://api.razorpay.com/v1/orders:\n", JSON.stringify(orderPayload, null, 2));
+
+      const order = await razorpayInstance.orders.create(orderPayload);
+
+      console.log("[RAZORPAY API] >>> SUCCESS response from Razorpay Orders API:\n", JSON.stringify(order, null, 2));
+      console.log("==============================================================\n");
 
       return {
         id: order.id,
         entity: order.entity || "order",
         amount: Number(order.amount),
         currency: order.currency,
-        receipt: (order.receipt as string) || receipt,
+        receipt: (order.receipt as string) || sanitizedReceipt,
         status: (order.status as "created" | "attempted" | "paid") || "created",
         created_at: Number(order.created_at) || Math.floor(Date.now() / 1000),
         is_mock: false,
       };
     } catch (err: any) {
+      console.error("[RAZORPAY API] >>> FAILED error from Razorpay Orders API:", err.message || err);
+      if (err.error) {
+        console.error("[RAZORPAY API ERROR DETAILS]:\n", JSON.stringify(err.error, null, 2));
+      }
+      console.log("==============================================================\n");
       console.warn(
         "Razorpay API call error, falling back to test order simulator:",
         err.message,
@@ -115,12 +148,15 @@ export async function createOrder(
 
   // Realistic mock simulator for offline / test runs
   const mockOrderId = `order_test_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 7)}`;
+  console.log(`[RAZORPAY API] Generated mock Order: ${mockOrderId} for ₹${(amountInPaise / 100).toFixed(2)}`);
+  console.log("==============================================================\n");
+
   return {
     id: mockOrderId,
     entity: "order",
     amount: Math.round(amountInPaise),
     currency,
-    receipt,
+    receipt: sanitizedReceipt,
     status: "created",
     created_at: Math.floor(Date.now() / 1000),
     is_mock: true,
@@ -268,22 +304,28 @@ export async function settlePayment(
     };
   }
 
+  console.log("\n=============== [RAZORPAY API: SETTLE PAYMENT] ===============");
+  console.log(`[RAZORPAY API] Order ID: ${order.id}`);
+  console.log(`[RAZORPAY API] Payment Method: ${method} (UPI Circle Delegated Mandate)`);
+  console.log(`[RAZORPAY API] Amount: ${order.amount} paise (₹${(order.amount / 100).toFixed(2)})`);
+  console.log(`[RAZORPAY API] Buyer VPA: ${buyerVpa}`);
+  console.log(`[RAZORPAY API] Generated Payment ID: ${paymentId}`);
+  console.log(`[RAZORPAY API] HMAC-SHA256 Signature: ${signature} (Verified: ${signatureVerified})`);
+
   // Live Razorpay instance validation if credentials exist
   if (razorpayInstance && hasValidKeys && !order.is_mock) {
     try {
+      console.log(`[RAZORPAY API] Fetching live order state for ${order.id} from https://api.razorpay.com/v1/orders/${order.id}...`);
       const liveOrder = await razorpayInstance.orders.fetch(order.id);
-      if (!liveOrder) {
-        console.warn(
-          `[RazorpayClient] Order ${order.id} not found on dashboard during settlement.`,
-        );
-      }
+      console.log(`[RAZORPAY API] >>> Live Order state from Razorpay API:\n`, JSON.stringify(liveOrder, null, 2));
     } catch (err: any) {
       console.warn(
-        "[RazorpayClient] Notice during live order verification:",
+        "[RAZORPAY API] Notice during live order verification:",
         err.message,
       );
     }
   }
+  console.log("==============================================================\n");
 
   // Transition order status to paid
   order.status = "paid";

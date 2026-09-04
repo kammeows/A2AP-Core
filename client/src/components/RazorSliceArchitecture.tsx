@@ -246,7 +246,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
   const lastProcessedThreadRef = useRef<string | null>(null);
   const processedTxKeysRef = useRef<Set<string>>(new Set<string>());
   const procurementInFlightRef = useRef<Set<string>>(new Set<string>());
-  const simulationTickRef = useRef<number>(1);
+  const simulationTickRef = useRef<number>(0);
   const inventoryEventsRef = useRef<
     Array<{ item: string; tick: number; quantityUsed: number }>
   >([]);
@@ -775,9 +775,25 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
             buyerTargetStockKg: TARGET_STOCK_LEVELS.flour,
             sellerInventories: currentSellerInventories,
           });
-          if (res && res.purchased_items && res.purchased_items.length > 0) {
+          if (
+            res &&
+            (res.status === "CONFIRMED" ||
+              res.status === "RENEGOTIATED_AND_CONFIRMED") &&
+            res.purchased_items &&
+            res.purchased_items.length > 0
+          ) {
             const eventKey = `${res.thread_id || "direct"}_${res.status}_${res.order_id || ""}`;
             applyPurchasedItems(res.purchased_items, eventKey);
+          } else if (res && res.status === "AWAITING_CONFIRMATION") {
+            setIsAutoSimulating(false);
+            addLog(
+              "par_trigger",
+              `⏸️ Partial Mode: Awaiting Restaurant Manager Approval`,
+              `Par replenishment deal proposed for ₹${res.total_amount || res.pending_offer?.total_price || ""}. Auto-simulation paused waiting for authorization on mobile device.`,
+              currentOrder.id,
+            );
+            setActiveProcessingOrder(null);
+            return false;
           }
         } finally {
           proactiveReplenishment.forEach((i) =>
@@ -858,7 +874,13 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
           buyerTargetStockKg: TARGET_STOCK_LEVELS.flour,
           sellerInventories: currentSellerInventories,
         });
-        if (res && res.purchased_items && res.purchased_items.length > 0) {
+        if (
+          res &&
+          (res.status === "CONFIRMED" ||
+            res.status === "RENEGOTIATED_AND_CONFIRMED") &&
+          res.purchased_items &&
+          res.purchased_items.length > 0
+        ) {
           const eventKey = `${res.thread_id || "direct"}_${res.status}_${res.order_id || ""}`;
           applyPurchasedItems(res.purchased_items, eventKey);
         }
@@ -903,6 +925,16 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
         );
 
         return true;
+      } else if (res && res.status === "AWAITING_CONFIRMATION") {
+        addLog(
+          "par_trigger",
+          `⏸️ Partial Mode: Awaiting Restaurant Manager Approval`,
+          `Order #${currentOrder.id} (${currentOrder.name}) is on hold. Negotiated procurement of ${itemsToProcure.map((i) => `${i.quantity}u ${i.item}`).join(", ")} for ₹${res.total_amount || res.pending_offer?.total_price || ""} requires mobile confirmation before payment & delivery.`,
+          currentOrder.id,
+        );
+        setIsAutoSimulating(false);
+        setActiveProcessingOrder(null);
+        return false;
       } else {
         addLog(
           "par_trigger",
@@ -911,6 +943,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
           currentOrder.id,
         );
         setIsAutoSimulating(false);
+        setActiveProcessingOrder(null);
         return false;
       }
     }
@@ -934,6 +967,8 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
     processedTxKeysRef.current.clear();
     lastProcessedThreadRef.current = null;
     procurementInFlightRef.current.clear();
+    simulationTickRef.current = 0;
+    inventoryEventsRef.current = [];
 
     if (preset === "default") {
       sellerInventoriesRef.current = {
@@ -1300,7 +1335,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
                   : isOffer
                     ? `seller response: ${(msg.payload as any).quantity_kg}u @ ₹${(msg.payload as any).final_price_per_kg}/u (-${(msg.payload as any).discount_pct}%)`
                     : isAccept
-                      ? `🏆 Finalized Deal`
+                      ? `Finalized Deal`
                       : msg.type;
 
               if (!isBuyerMsg) {
@@ -1378,7 +1413,7 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
           >
             <Award size={12} color="#34d399" />
             <span>
-              🏆 Finalized: {finalizedSummary.itemsSummary} (₹
+              Finalized: {finalizedSummary.itemsSummary} (₹
               {finalizedSummary.totalCost})
             </span>
           </div>
@@ -1414,6 +1449,60 @@ export const RazorSliceArchitecture: React.FC<RazorSliceArchitectureProps> = ({
           opacity: 0.8,
         }}
       />
+
+      {/* Partial Mode Awaiting Confirmation Alert Banner */}
+      {delegationMode === "partial" &&
+        latestResult?.status === "AWAITING_CONFIRMATION" && (
+          <div
+            style={{
+              position: "relative",
+              zIndex: 10,
+              background:
+                "linear-gradient(90deg, rgba(245, 158, 11, 0.2) 0%, rgba(217, 119, 6, 0.25) 100%)",
+              border: "1px solid #f59e0b",
+              borderRadius: 8,
+              padding: "0.6rem 1rem",
+              marginBottom: "1rem",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              flexWrap: "wrap",
+              gap: "0.5rem",
+            }}
+          >
+            <div
+              style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}
+            >
+              <Clock size={18} color="#f59e0b" />
+              <span
+                style={{
+                  fontWeight: 700,
+                  color: "#fef3c7",
+                  fontSize: "0.85rem",
+                }}
+              >
+                ⏸️ Partial Delegation: Awaiting Restaurant Manager Approval on
+                Mobile Device (₹
+                {latestResult.total_amount ||
+                  latestResult.pending_offer?.total_price}
+                )
+              </span>
+            </div>
+            <span
+              style={{
+                background: "#78350f",
+                color: "#fde68a",
+                fontSize: "0.72rem",
+                fontWeight: 700,
+                padding: "0.2rem 0.5rem",
+                borderRadius: 4,
+                border: "1px solid #d97706",
+              }}
+            >
+              Awaiting Mobile UPI Circle Authorization
+            </span>
+          </div>
+        )}
 
       {/* Restock Live Notification Banner */}
       {restockNotification && (

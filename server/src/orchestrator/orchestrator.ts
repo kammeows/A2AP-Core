@@ -131,8 +131,20 @@ export function getPolicyConfig(agentId: string = BUYER_ID): PolicyConfig {
     const row = db.prepare(`SELECT config FROM policy_configs WHERE agent_id = ?`).get(agentId) as
       | { config: string }
       | undefined;
-    if (row) {
-      return JSON.parse(row.config);
+    if (row && row.config) {
+      const parsed = JSON.parse(row.config);
+      return {
+        ...defaultBuyerPolicy,
+        ...parsed,
+        agent_id: agentId,
+        per_unit_price_ceiling: {
+          ...defaultBuyerPolicy.per_unit_price_ceiling,
+          ...(parsed.per_unit_price_ceiling || {}),
+        },
+        seller_allowlist: Array.isArray(parsed.seller_allowlist)
+          ? parsed.seller_allowlist
+          : defaultBuyerPolicy.seller_allowlist,
+      };
     }
     return defaultBuyerPolicy;
   } catch {
@@ -249,7 +261,8 @@ export async function runNegotiation(
       params.customRfq?.target_price_per_unit
     );
 
-    const negotiationCeiling = getBuyerCeiling(item, policy.per_unit_price_ceiling[item]);
+    const ceilingMap = policy.per_unit_price_ceiling || defaultBuyerPolicy.per_unit_price_ceiling || {};
+    const negotiationCeiling = getBuyerCeiling(item, ceilingMap[item] || ceilingMap[norm]);
 
     let matchingSellers: Array<{ agent_id: string; name: string; stocked_items: string[] }>;
     if (scenario === "happy" || scenario === "failure") {
@@ -286,7 +299,7 @@ export async function runNegotiation(
       quantity_kg: deficitQuantity,
       quality_min: "Grade A",
       needed_by: tomorrow,
-      buyer_max_price_per_kg: policy.per_unit_price_ceiling[item] || 35,
+      buyer_max_price_per_kg: ceilingMap[item] || ceilingMap[norm] || 35,
       target_price_per_unit: targetPricePerUnit,
       ...params.customRfq,
     };
@@ -389,7 +402,7 @@ export async function runNegotiation(
               quantity_kg: committedQty,
               quality_min: "Grade A",
               needed_by: tomorrow,
-              buyer_max_price_per_kg: policy.per_unit_price_ceiling[item] || 35,
+              buyer_max_price_per_kg: ceilingMap[item] || ceilingMap[norm] || 35,
               target_price_per_unit: targetPricePerUnit,
             };
 
@@ -533,20 +546,25 @@ export async function runNegotiation(
 
   if (overallApproved) {
     if (policy.delegation_mode === "partial") {
+      const pendingOfferWithItems = {
+        ...lastChosenOffer,
+        total_price: totalDealAmount,
+        items: allPurchasedItems,
+      };
       return {
         thread_id: threadId,
         scenario,
         status: "AWAITING_CONFIRMATION",
         final_message_type: "ACCEPT",
-        pending_offer: lastChosenOffer,
+        pending_offer: pendingOfferWithItems,
         policy_checks: allPolicyChecks,
         total_amount: totalDealAmount,
-        purchased_items: allPurchasedItems,
+        purchased_items: [],
       };
     }
 
     const amountInPaise = Math.round(totalDealAmount * 100);
-    const receipt = `rcpt_${threadId}_${Date.now().toString(36)}`;
+    const receipt = `rc_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 7)}`;
     const order = await razorpayClient.createOrder(amountInPaise, "INR", receipt);
 
     logEnvelope(threadId, "ORDER_CREATE", BUYER_ID, RAZORPAY_SYSTEM_ID, {
@@ -639,7 +657,10 @@ export async function runNegotiation(
           quantity_kg: reducedQty,
           quality_min: "Grade A",
           needed_by: tomorrow,
-          buyer_max_price_per_kg: policy.per_unit_price_ceiling[lastChosenOffer!.item] || 35,
+          buyer_max_price_per_kg:
+            (policy.per_unit_price_ceiling && policy.per_unit_price_ceiling[lastChosenOffer!.item]) ||
+            defaultBuyerPolicy.per_unit_price_ceiling[lastChosenOffer!.item] ||
+            35,
         },
         targetSeller
       );
@@ -796,7 +817,7 @@ export async function confirmPendingTransaction(params: {
 
   const totalPrice = offer.total_price || 1440;
   const amountInPaise = Math.round(totalPrice * 100);
-  const receipt = `rcpt_${threadId}_human_${Date.now().toString(36)}`;
+  const receipt = `rc_h_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 7)}`;
   const order = await razorpayClient.createOrder(amountInPaise, "INR", receipt);
 
   logEnvelope(threadId, "ORDER_CREATE", BUYER_ID, RAZORPAY_SYSTEM_ID, {
@@ -839,14 +860,17 @@ export async function confirmPendingTransaction(params: {
     message: `Human-authorized Razorpay payment ${settlement.paymentId} CAPTURED (Order ${order.id}) for ₹${totalPrice}.`,
   });
 
-  const purchasedItems: PurchasedItem[] = [
-    {
-      seller_id: offer.seller_id || "agent:seller:razor_pies",
-      item: offer.item || "flour",
-      quantity: offer.quantity_kg || 5,
-      price: offer.final_price_per_kg || 6,
-    },
-  ];
+  const purchasedItems: PurchasedItem[] =
+    (offer as any).items && Array.isArray((offer as any).items) && (offer as any).items.length > 0
+      ? (offer as any).items
+      : [
+          {
+            seller_id: offer.seller_id || "agent:seller:razor_pies",
+            item: offer.item || "flour",
+            quantity: offer.quantity_kg || 5,
+            price: offer.final_price_per_kg || 6,
+          },
+        ];
   InventoryStore.updateStockAfterOrder(purchasedItems);
 
   return {

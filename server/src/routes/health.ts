@@ -37,14 +37,30 @@ router.get("/policy", (_req, res) => {
 
 router.put("/policy", (req, res) => {
   try {
-    const updated = req.body;
+    const updated = req.body || {};
+    const agentId = updated.agent_id || BUYER_ID;
+    const current = getPolicyConfig(agentId) || defaultBuyerPolicy;
+    const merged = {
+      ...defaultBuyerPolicy,
+      ...current,
+      ...updated,
+      agent_id: agentId,
+      per_unit_price_ceiling: {
+        ...(defaultBuyerPolicy.per_unit_price_ceiling || {}),
+        ...(current.per_unit_price_ceiling || {}),
+        ...(updated.per_unit_price_ceiling || {}),
+      },
+      seller_allowlist: Array.isArray(updated.seller_allowlist)
+        ? updated.seller_allowlist
+        : (current.seller_allowlist || defaultBuyerPolicy.seller_allowlist),
+    };
     const stmt = db.prepare(`
       INSERT INTO policy_configs (agent_id, config)
       VALUES (?, ?)
       ON CONFLICT(agent_id) DO UPDATE SET config = excluded.config
     `);
-    stmt.run(updated.agent_id || BUYER_ID, JSON.stringify(updated));
-    res.json({ success: true, config: updated });
+    stmt.run(agentId, JSON.stringify(merged));
+    res.json({ success: true, config: merged });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
   }

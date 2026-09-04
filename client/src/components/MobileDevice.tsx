@@ -10,6 +10,7 @@ import {
   XCircle,
   PackageX,
   Lock,
+  Clock,
 } from 'lucide-react';
 import { NegotiationResult, OfferPayload } from '../types';
 
@@ -296,6 +297,44 @@ export const MobileDevice: React.FC<MobileDeviceProps> = ({
             <h4 style={{ fontSize: '0.78rem', color: '#0D94FB', marginBottom: '0.4rem', fontWeight: 700 }}>
               Transaction Status
             </h4>
+
+            {/* Case: Awaiting Confirmation */}
+            {latestResult?.status === 'AWAITING_CONFIRMATION' && (
+              <div className="fade-in" style={{
+                background: '#fffbeb',
+                border: '1px solid #fde68a',
+                borderRadius: 8,
+                padding: '0.75rem',
+                marginBottom: '0.65rem'
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', color: '#b45309', marginBottom: '0.2rem' }}>
+                  <Clock size={15} />
+                  <strong style={{ fontSize: '0.82rem' }}>Awaiting Approval</strong>
+                </div>
+                <p style={{ fontSize: '0.74rem', color: '#475569' }}>
+                  A2A negotiation concluded. Review the proposed purchase above and authorize payment.
+                </p>
+              </div>
+            )}
+
+            {/* Case: Declined by Manager */}
+            {latestResult?.status === 'REJECTED' && (
+              <div className="fade-in" style={{
+                background: '#fef2f2',
+                border: '1px solid #fecaca',
+                borderRadius: 8,
+                padding: '0.75rem',
+                marginBottom: '0.65rem'
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', color: '#b91c1c', marginBottom: '0.2rem' }}>
+                  <XCircle size={15} />
+                  <strong style={{ fontSize: '0.82rem' }}>Transaction Declined</strong>
+                </div>
+                <p style={{ fontSize: '0.74rem', color: '#475569' }}>
+                  Declined by restaurant manager. Zero funds transferred, inventory unchanged.
+                </p>
+              </div>
+            )}
 
             {/* Case 1: Out of Stock / No Seller Found */}
             {latestResult?.status === 'NO_SELLER_FOUND' && (
