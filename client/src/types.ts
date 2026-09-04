@@ -94,6 +94,7 @@ export interface OfferPayload {
   upsell_item?: UpsellItem;
   stock_limited?: boolean;
   stockLimited?: boolean;
+  items?: PurchasedItem[];
 }
 
 export interface SplitAcceptItem {

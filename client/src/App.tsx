@@ -302,6 +302,7 @@ export const App: React.FC = () => {
               onConfirmTransaction={handleConfirmTransaction}
               isConfirming={isConfirming}
               latestResult={latestResult}
+              messages={messages}
               weekSpentSoFar={weekSpentSoFar}
               weeklyBudgetCap={weeklyBudgetCap}
               perTransactionCap={perTransactionCap}
