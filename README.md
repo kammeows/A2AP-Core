@@ -12,8 +12,8 @@
 
 ---
 
-Try it live without setup (BYOK mechanism, completely secure): https://a2a-razorpay-buildathon-project-7tth80q7x.vercel.app
-View demo video here: https://youtu.be/YMxdp864iH0
+- Try it live without setup (BYOK mechanism, completely secure): https://a2a-razorpay-buildathon-project-7tth80q7x.vercel.app
+- View demo video here: https://youtu.be/YMxdp864iH0
 
 ---
 
